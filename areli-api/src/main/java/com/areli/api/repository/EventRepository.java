@@ -17,6 +17,16 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
             join fetch e.client
             join fetch e.floor
             left join fetch e.eventPackage
+            order by e.createdAt desc
+            """)
+    List<Event> findAllWithDetailsOrderByCreatedAtDesc();
+
+    @Query("""
+            select e
+            from Event e
+            join fetch e.client
+            join fetch e.floor
+            left join fetch e.eventPackage
             where e.id = :id
             """)
     java.util.Optional<Event> findDetailedById(@Param("id") UUID id);

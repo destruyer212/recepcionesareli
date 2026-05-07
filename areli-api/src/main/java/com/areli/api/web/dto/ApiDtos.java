@@ -11,6 +11,7 @@ import com.areli.api.domain.Enums.FloorStatus;
 import jakarta.validation.constraints.NotBlank;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.time.LocalTime;
 import java.util.UUID;
 
@@ -117,7 +118,8 @@ public final class ApiDtos {
             LocalDate cancellationRequestedAt,
             Integer cancellationNoticeDays,
             BigDecimal retainedAdvanceAmount,
-            String cancellationNotes
+            String cancellationNotes,
+            OffsetDateTime createdAt
     ) {
         public static EventResponse from(Event event) {
             String packageName = event.getEventPackage() == null ? null : event.getEventPackage().getName();
@@ -145,7 +147,8 @@ public final class ApiDtos {
                     event.getCancellationRequestedAt(),
                     event.getCancellationNoticeDays(),
                     event.getRetainedAdvanceAmount(),
-                    event.getCancellationNotes());
+                    event.getCancellationNotes(),
+                    event.getCreatedAt());
         }
     }
 

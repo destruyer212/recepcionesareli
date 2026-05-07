@@ -74,6 +74,7 @@ type View =
   | 'ai'
   | 'settings'
 type AiMode = 'contract' | 'summary' | 'marketing' | 'balance'
+type EventSortMode = 'recent' | 'upcoming'
 const VIEW_STORAGE_KEY = 'areli-active-view'
 const WORKERS_STORAGE_KEY = 'areli-workers-directory'
 
@@ -374,6 +375,18 @@ const shortDate = new Intl.DateTimeFormat('es-PE', {
   month: 'short',
 })
 
+const createdAtDate = new Intl.DateTimeFormat('es-PE', {
+  day: 'numeric',
+  month: 'long',
+  year: 'numeric',
+})
+
+const createdAtTime = new Intl.DateTimeFormat('es-PE', {
+  hour: 'numeric',
+  minute: '2-digit',
+  hour12: true,
+})
+
 function parseDateKey(value: string) {
   const [year, month, day] = value.split('-').map(Number)
   return new Date(year, month - 1, day)
@@ -388,6 +401,22 @@ function dateKey(date: Date) {
 
 function capitalizedDateLabel(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
+function createdLabel(value?: string) {
+  if (!value) return 'Fecha de creación no disponible'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return 'Fecha de creación no disponible'
+  return `Creado el ${createdAtDate.format(parsed)}, ${createdAtTime.format(parsed)}`
+}
+
+function monthHintFromDateKey(value: string) {
+  const parts = value.split('-')
+  if (parts.length < 2) return ''
+  const monthNumber = Number(parts[1])
+  if (!Number.isInteger(monthNumber) || monthNumber < 1 || monthNumber > 12) return ''
+  const monthName = new Intl.DateTimeFormat('es-PE', { month: 'long' }).format(new Date(2026, monthNumber - 1, 1)).toUpperCase()
+  return monthName
 }
 
 function sameMonth(a: Date, b: Date) {
@@ -709,6 +738,12 @@ function App() {
     }
   }, [view])
 
+  useEffect(() => {
+    if (!message) return
+    const timeoutId = window.setTimeout(() => setMessage(''), 3200)
+    return () => window.clearTimeout(timeoutId)
+  }, [message])
+
   function updateClient<K extends keyof ClientPayload>(key: K, value: ClientPayload[K]) {
     setClientForm((current) => ({ ...current, [key]: value }))
   }
@@ -790,7 +825,7 @@ function App() {
       setEventForm((current) => ({ ...emptyEvent, clientId: current.clientId, floorId: current.floorId }))
       setMessage('Evento separado correctamente.')
       await loadData()
-      setView('events')
+      setView('eventsRegistered')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'No se pudo crear el evento.')
     }
@@ -966,6 +1001,14 @@ function App() {
     { id: 'workers', label: 'Trabajadores', icon: Users },
     { id: 'ai', label: 'IA', icon: Bot },
   ]
+  const mobileCommandNav: Array<{ id: View; label: string; icon: typeof LayoutDashboard }> = [
+    { id: 'dashboard', label: 'Inicio', icon: LayoutDashboard },
+    { id: 'events', label: 'Crear', icon: Plus },
+    { id: 'eventsRegistered', label: 'Eventos', icon: ClipboardList },
+    { id: 'clientsRegistered', label: 'Clientes', icon: Users },
+    { id: 'inventory', label: 'Inventario', icon: Package },
+    { id: 'ai', label: 'IA', icon: Bot },
+  ]
 
   const handleViewChange = (nextView: View) => {
     setView(nextView)
@@ -1042,10 +1085,30 @@ function App() {
               Separar evento
             </button>
           </div>
+          <nav className="mobile-command-nav" aria-label="Accesos rápidos del sistema">
+            {mobileCommandNav.map((item) => {
+              const Icon = item.icon
+              return (
+                <button
+                  className={`mobile-command-tab ${view === item.id ? 'active' : ''}`}
+                  key={item.id}
+                  onClick={() => handleViewChange(item.id)}
+                  type="button"
+                >
+                  <Icon size={17} />
+                  <span>{item.label}</span>
+                </button>
+              )
+            })}
+          </nav>
         </header>
 
         {error && <p className="message error">{error}</p>}
-        {message && <p className="message ok">{message}</p>}
+        {message && (
+          <div aria-live="polite" className="floating-toast" role="status">
+            {message}
+          </div>
+        )}
         {loading && <p className="empty">Cargando datos desde Supabase...</p>}
 
         {!loading && view === 'dashboard' && <Dashboard summary={summary} events={events} />}
@@ -1965,6 +2028,17 @@ function Dashboard({ summary, events }: { summary: DashboardSummary | null; even
                               {dayEvents.length === 1 ? <span className={`mobile-event-dot ${dayEvents[0].status}`} /> : <span>{dayEvents.length}</span>}
                             </span>
                           )}
+                          {dayEvents.length > 0 && (
+                            <span className="desktop-month-event-list" aria-hidden="true">
+                              {dayEvents.slice(0, 3).map((event) => (
+                                <span className={`desktop-month-event-name ${event.status}`} key={event.id}>
+                                  <span>{shortTime(event.startTime)}</span>
+                                  <strong>{event.title}</strong>
+                                </span>
+                              ))}
+                              {dayEvents.length > 3 && <span className="desktop-month-more">+{dayEvents.length - 3} eventos</span>}
+                            </span>
+                          )}
                         </button>
                       )
                     })}
@@ -2730,6 +2804,22 @@ function EventTable({
   const [loadingRescheduleId, setLoadingRescheduleId] = useState<string | null>(null)
   const [rescheduleForm, setRescheduleForm] = useState({ eventDate: '', startTime: '', endTime: '' })
   const [rescheduleFallbackNote, setRescheduleFallbackNote] = useState<string | null>(null)
+  const [sortMode, setSortMode] = useState<EventSortMode>('recent')
+  const todayKey = dateKey(new Date())
+  const visibleEvents = useMemo(() => {
+    const sorted = [...events]
+    if (sortMode === 'upcoming') {
+      return sorted
+        .filter((event) => event.status !== 'CANCELLED')
+        .sort((a, b) => `${a.eventDate}${a.startTime}`.localeCompare(`${b.eventDate}${b.startTime}`))
+    }
+    return sorted.sort((a, b) => {
+      const aCreated = a.createdAt ? new Date(a.createdAt).getTime() : 0
+      const bCreated = b.createdAt ? new Date(b.createdAt).getTime() : 0
+      if (aCreated !== bCreated) return bCreated - aCreated
+      return `${b.eventDate}${b.startTime}`.localeCompare(`${a.eventDate}${a.startTime}`)
+    })
+  }, [events, sortMode, todayKey])
 
   async function downloadContract(event: EventItem) {
     setDownloadingId(event.id)
@@ -2922,6 +3012,32 @@ function EventTable({
         </div>
       </section>
     )}
+    <div className="event-table-toolbar">
+      <div>
+        <span>{sortMode === 'recent' ? 'Últimos eventos creados' : 'Eventos por fecha (no anulados)'}</span>
+        <strong>{visibleEvents.length} eventos</strong>
+      </div>
+      <div className="event-sort-tabs" role="tablist" aria-label="Orden de eventos">
+        <button
+          aria-selected={sortMode === 'recent'}
+          className={sortMode === 'recent' ? 'active' : ''}
+          onClick={() => setSortMode('recent')}
+          role="tab"
+          type="button"
+        >
+          Últimos creados
+        </button>
+        <button
+          aria-selected={sortMode === 'upcoming'}
+          className={sortMode === 'upcoming' ? 'active' : ''}
+          onClick={() => setSortMode('upcoming')}
+          role="tab"
+          type="button"
+        >
+          Por fecha
+        </button>
+      </div>
+    </div>
     <div className="table-wrap desktop-table">
       <table>
         <thead>
@@ -2937,7 +3053,7 @@ function EventTable({
           </tr>
         </thead>
         <tbody>
-          {events.map((event) => (
+          {visibleEvents.map((event) => (
             <tr key={event.id}>
               <td>
                 {event.eventDate}
@@ -2945,6 +3061,8 @@ function EventTable({
                 <small>
                   {event.startTime} - {event.endTime}
                 </small>
+                <br />
+                <small>{createdLabel(event.createdAt)}</small>
               </td>
               <td>
                 <strong>{event.title}</strong>
@@ -3003,7 +3121,7 @@ function EventTable({
       </table>
     </div>
     <div className="mobile-event-list">
-      {events.map((event) => (
+      {visibleEvents.map((event) => (
         <article className="mobile-event-card mobile-event-card-2026 rounded-lg border bg-white p-3 shadow-sm" key={event.id}>
           <header>
             <div>
@@ -3015,7 +3133,11 @@ function EventTable({
           <dl>
             <div>
               <dt>Fecha</dt>
-              <dd>{event.eventDate}</dd>
+              <dd>
+                {event.eventDate}
+                <br />
+                <small>{monthHintFromDateKey(event.eventDate)}</small>
+              </dd>
             </div>
             <div>
               <dt>Horario</dt>
@@ -3039,6 +3161,7 @@ function EventTable({
           <p>
             {event.packageName ?? event.eventType} - APDAYC: {apdaycStatusLabels[event.apdaycStatus]}
           </p>
+          <p>{createdLabel(event.createdAt)}</p>
           <div className="mobile-card-actions">
             <button className="btn icon" onClick={() => onEditRequested?.(event)} type="button">
               Editar
@@ -3241,6 +3364,10 @@ function ClientsView({
         {editingClientId && editingClientForm && (
           <div className="event-edit-box">
             <h3>Editando cliente</h3>
+            <p className="muted">
+              Estás editando a <strong>{editingClientForm.fullName || 'cliente sin nombre'}</strong>. Guarda o cancela para volver
+              al listado.
+            </p>
             <form onSubmit={submitEditingClient}>
               <div className="form-grid">
                 <label className="full">
@@ -3327,8 +3454,13 @@ function ClientsView({
                 {client.whatsapp || client.phone || 'Sin teléfono'} {client.email ? `- ${client.email}` : ''}
               </p>
               <div className="form-actions">
-                <button className="btn icon" onClick={() => startEditingClient(client)} type="button">
-                  Editar
+                <button
+                  className="btn icon"
+                  disabled={editingClientId === client.id}
+                  onClick={() => startEditingClient(client)}
+                  type="button"
+                >
+                  {editingClientId === client.id ? 'Editando ahora' : 'Editar'}
                 </button>
               </div>
             </article>

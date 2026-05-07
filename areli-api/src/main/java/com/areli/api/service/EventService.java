@@ -239,9 +239,7 @@ public class EventService {
 
     @Transactional(readOnly = true)
     public List<Event> listUpcoming() {
-        return events.findUpcomingWithDetails(
-                java.time.LocalDate.now(),
-                java.time.LocalDate.now().plusMonths(3));
+        return events.findAllWithDetailsOrderByCreatedAtDesc();
     }
 
     @Transactional(readOnly = true)

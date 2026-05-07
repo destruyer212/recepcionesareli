@@ -70,6 +70,7 @@ export type EventItem = {
   cancellationNoticeDays?: number
   retainedAdvanceAmount?: number
   cancellationNotes?: string
+  createdAt?: string
 }
 
 export type ContractPreview = {
