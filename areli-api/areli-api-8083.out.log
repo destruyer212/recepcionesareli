@@ -1,0 +1,87 @@
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] ------------------------< com.areli:areli-api >-------------------------
+[INFO] Building areli-api 0.0.1-SNAPSHOT
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] >>> spring-boot:3.4.5:run (default-cli) > test-compile @ areli-api >>>
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ areli-api ---
+[INFO] Copying 1 resource from src\main\resources to target\classes
+[INFO] Copying 6 resources from src\main\resources to target\classes
+[INFO] 
+[INFO] --- compiler:3.13.0:compile (default-compile) @ areli-api ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] --- resources:3.3.1:testResources (default-testResources) @ areli-api ---
+[INFO] skip non existing resourceDirectory C:\SpringProjectsnew\recepcionesareli\areli-api\src\test\resources
+[INFO] 
+[INFO] --- compiler:3.13.0:testCompile (default-testCompile) @ areli-api ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] <<< spring-boot:3.4.5:run (default-cli) < test-compile @ areli-api <<<
+[INFO] 
+[INFO] 
+[INFO] --- spring-boot:3.4.5:run (default-cli) @ areli-api ---
+[INFO] Attaching agents: []
+
+  .   ____          _            __ _ _
+ /\\ / ___'_ __ _ _(_)_ __  __ _ \ \ \ \
+( ( )\___ | '_ | '_| | '_ \/ _` | \ \ \ \
+ \\/  ___)| |_)| | | | | || (_| |  ) ) ) )
+  '  |____| .__|_| |_|_| |_\__, | / / / /
+ =========|_|==============|___/=/_/_/_/
+
+ :: Spring Boot ::                (v3.4.5)
+
+2026-05-06T12:19:11.272-05:00  INFO 30984 --- [areli-api] [           main] com.areli.api.AreliApiApplication        : Starting AreliApiApplication using Java 17.0.17 with PID 30984 (C:\SpringProjectsnew\recepcionesareli\areli-api\target\classes started by CARLOS in C:\SpringProjectsnew\recepcionesareli\areli-api)
+2026-05-06T12:19:11.285-05:00  INFO 30984 --- [areli-api] [           main] com.areli.api.AreliApiApplication        : No active profile set, falling back to 1 default profile: "default"
+2026-05-06T12:19:11.909-05:00  INFO 30984 --- [areli-api] [           main] .s.d.r.c.RepositoryConfigurationDelegate : Bootstrapping Spring Data JPA repositories in DEFAULT mode.
+2026-05-06T12:19:11.973-05:00  INFO 30984 --- [areli-api] [           main] .s.d.r.c.RepositoryConfigurationDelegate : Finished Spring Data repository scanning in 49 ms. Found 5 JPA repository interfaces.
+2026-05-06T12:19:12.483-05:00  INFO 30984 --- [areli-api] [           main] o.s.b.w.embedded.tomcat.TomcatWebServer  : Tomcat initialized with port 8083 (http)
+2026-05-06T12:19:12.499-05:00  INFO 30984 --- [areli-api] [           main] o.apache.catalina.core.StandardService   : Starting service [Tomcat]
+2026-05-06T12:19:12.499-05:00  INFO 30984 --- [areli-api] [           main] o.apache.catalina.core.StandardEngine    : Starting Servlet engine: [Apache Tomcat/10.1.40]
+2026-05-06T12:19:12.547-05:00  INFO 30984 --- [areli-api] [           main] o.a.c.c.C.[Tomcat].[localhost].[/]       : Initializing Spring embedded WebApplicationContext
+2026-05-06T12:19:12.552-05:00  INFO 30984 --- [areli-api] [           main] w.s.c.ServletWebServerApplicationContext : Root WebApplicationContext: initialization completed in 1203 ms
+2026-05-06T12:19:12.760-05:00  INFO 30984 --- [areli-api] [           main] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Starting...
+2026-05-06T12:19:14.303-05:00  INFO 30984 --- [areli-api] [           main] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Start completed.
+2026-05-06T12:19:15.309-05:00  INFO 30984 --- [areli-api] [           main] org.flywaydb.core.FlywayExecutor         : Database: jdbc:postgresql://aws-1-us-east-2.pooler.supabase.com:6543/postgres?sslmode=require&prepareThreshold=0&currentSchema=areli,public (PostgreSQL 17.6)
+2026-05-06T12:19:16.515-05:00  INFO 30984 --- [areli-api] [           main] o.f.core.internal.command.DbValidate     : Successfully validated 7 migrations (execution time 00:00.439s)
+2026-05-06T12:19:18.844-05:00  INFO 30984 --- [areli-api] [           main] o.f.core.internal.command.DbMigrate      : Current version of schema "areli": 5
+2026-05-06T12:19:19.197-05:00  INFO 30984 --- [areli-api] [           main] o.f.core.internal.command.DbMigrate      : Migrating schema "areli" to version "6 - fix spanish contract text"
+2026-05-06T12:19:21.972-05:00  INFO 30984 --- [areli-api] [           main] o.f.core.internal.command.DbMigrate      : Successfully applied 1 migration to schema "areli", now at version v6 (execution time 00:01.637s)
+2026-05-06T12:19:22.674-05:00  INFO 30984 --- [areli-api] [           main] o.hibernate.jpa.internal.util.LogHelper  : HHH000204: Processing PersistenceUnitInfo [name: default]
+2026-05-06T12:19:22.722-05:00  INFO 30984 --- [areli-api] [           main] org.hibernate.Version                    : HHH000412: Hibernate ORM core version 6.6.13.Final
+2026-05-06T12:19:22.770-05:00  INFO 30984 --- [areli-api] [           main] o.h.c.internal.RegionFactoryInitiator    : HHH000026: Second-level cache disabled
+2026-05-06T12:19:23.007-05:00  INFO 30984 --- [areli-api] [           main] o.s.o.j.p.SpringPersistenceUnitInfo      : No LoadTimeWeaver setup: ignoring JPA class transformer
+2026-05-06T12:19:23.500-05:00  INFO 30984 --- [areli-api] [           main] org.hibernate.orm.connections.pooling    : HHH10001005: Database info:
+	Database JDBC URL [Connecting through datasource 'HikariDataSource (HikariPool-1)']
+	Database driver: undefined/unknown
+	Database version: 17.6
+	Autocommit mode: undefined/unknown
+	Isolation level: undefined/unknown
+	Minimum pool size: undefined/unknown
+	Maximum pool size: undefined/unknown
+2026-05-06T12:19:24.573-05:00  INFO 30984 --- [areli-api] [           main] o.h.e.t.j.p.i.JtaPlatformInitiator       : HHH000489: No JTA platform available (set 'hibernate.transaction.jta.platform' to enable JTA platform integration)
+2026-05-06T12:19:24.585-05:00  INFO 30984 --- [areli-api] [           main] j.LocalContainerEntityManagerFactoryBean : Initialized JPA EntityManagerFactory for persistence unit 'default'
+2026-05-06T12:19:25.012-05:00  INFO 30984 --- [areli-api] [           main] o.s.d.j.r.query.QueryEnhancerFactory     : Hibernate is in classpath; If applicable, HQL parser will be used.
+2026-05-06T12:19:26.190-05:00  INFO 30984 --- [areli-api] [           main] o.s.b.w.embedded.tomcat.TomcatWebServer  : Tomcat started on port 8083 (http) with context path '/'
+2026-05-06T12:19:26.207-05:00  INFO 30984 --- [areli-api] [           main] com.areli.api.AreliApiApplication        : Started AreliApiApplication in 15.502 seconds (process running for 15.779)
+2026-05-06T12:19:26.377-05:00  INFO 30984 --- [areli-api] [nio-8083-exec-2] o.a.c.c.C.[Tomcat].[localhost].[/]       : Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-05-06T12:19:26.382-05:00  INFO 30984 --- [areli-api] [nio-8083-exec-2] o.s.web.servlet.DispatcherServlet        : Initializing Servlet 'dispatcherServlet'
+2026-05-06T12:19:26.382-05:00  INFO 30984 --- [areli-api] [nio-8083-exec-2] o.s.web.servlet.DispatcherServlet        : Completed initialization in 0 ms
+2026-05-06T13:36:52.347-05:00  WARN 30984 --- [areli-api] [l-1 housekeeper] com.zaxxer.hikari.pool.HikariPool        : HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=4m36s677ms447µs400ns).
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD FAILURE
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  02:37 h
+[INFO] Finished at: 2026-05-06T14:56:28-05:00
+[INFO] ------------------------------------------------------------------------
+[ERROR] Failed to execute goal org.springframework.boot:spring-boot-maven-plugin:3.4.5:run (default-cli) on project areli-api: Process terminated with exit code: -1 -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoExecutionException

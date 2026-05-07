@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+:root {
+  font-family:
+    "Plus Jakarta Sans", "Inter", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    sans-serif;
+  color: #0f172a;
+  background: #f4f6fa;
+  font-synthesis: none;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  --color-bg: #f6f3ec;
+  --color-card: #ffffff;
+  --color-sidebar: #080d18;
+  --color-primary: #d6a635;
+  --color-primary-hover: #a66a00;
+  --color-primary-soft: #fff6db;
+  --color-primary-light: #f4c542;
+  --color-text: #0b1220;
+  --color-muted: #64748b;
+  --color-border: #e7dcc3;
+  --radius-card: 16px;
+  --shadow-soft: 0 14px 34px rgba(49, 36, 13, 0.09);
+  --bg: var(--color-bg);
+  --surface: var(--color-card);
+  --surface-soft: #fbf8f0;
+  --ink: var(--color-text);
+  --muted: var(--color-muted);
+  --border: var(--color-border);
+  --brand: var(--color-primary);
+  --brand-dark: #5d3b00;
+  --gold: var(--color-primary-light);
+  --green: #16a34a;
+  --blue: #2563eb;
+  --red: #b42318;
+  --shadow: var(--shadow-soft);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+#root {
+  min-height: 100vh;
+}
