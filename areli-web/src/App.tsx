@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
+import type { FormEvent, PointerEvent as ReactPointerEvent } from 'react'
 import FullCalendar from '@fullcalendar/react'
 import DatePicker, { registerLocale } from 'react-datepicker'
 import dayGridPlugin from '@fullcalendar/daygrid'
@@ -35,6 +35,7 @@ import {
 } from 'lucide-react'
 import { api } from './api'
 import { downloadEventContractPdf } from './pdf'
+import { WorkersView } from './components/Workers/WorkersView'
 import type {
   AiResponse,
   Client,
@@ -49,10 +50,10 @@ import type {
   EventStatus,
   Floor,
   FloorStatus,
-  InventoryCondition,
   InventoryDashboard,
   InventoryItem,
   InventoryPayload,
+  InventoryStatus,
   RescheduleOptions,
   AppSettings,
 } from './types'
@@ -70,23 +71,16 @@ type View =
   | 'packages'
   | 'floors'
   | 'inventory'
+  | 'inventoryCreate'
   | 'workers'
+  | 'workersCreate'
   | 'ai'
   | 'settings'
 type AiMode = 'contract' | 'summary' | 'marketing' | 'balance'
 type EventSortMode = 'recent' | 'upcoming'
 const VIEW_STORAGE_KEY = 'areli-active-view'
-const WORKERS_STORAGE_KEY = 'areli-workers-directory'
-
-type WorkerCategory = 'MOZOS' | 'FOTOGRAFOS' | 'TORTAS' | 'OTROS'
-
-type WorkerContact = {
-  id: string
-  category: WorkerCategory
-  name: string
-  phone: string
-  notes: string
-}
+const MANUAL_LOOKUP_FALLBACK_MESSAGE =
+  'No se pudo obtener los datos automáticamente. Puedes completar el nombre manualmente y guardar el cliente.'
 
 type FancySelectOption = {
   value: string
@@ -152,21 +146,16 @@ function FancySelect({
 
   return (
     <div className={`fancy-select ${isOpen ? 'open' : ''} ${disabled ? 'disabled' : ''}`} ref={wrapperRef}>
-      <select
+      <input
+        aria-hidden="true"
         className="fancy-select-native"
         disabled={disabled}
+        readOnly
         required={required}
         tabIndex={-1}
+        type="text"
         value={value}
-        onChange={(event) => onChange(event.target.value)}
-      >
-        <option value="">{placeholder}</option>
-        {options.map((option) => (
-          <option disabled={option.disabled} key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+      />
       <button
         aria-expanded={isOpen}
         className="fancy-select-trigger"
@@ -217,6 +206,167 @@ function FancySelect({
   )
 }
 
+function blurActiveEditableElement() {
+  const activeElement = document.activeElement
+  if (!(activeElement instanceof HTMLElement)) return
+  if (activeElement.matches('input, textarea, select, [contenteditable="true"]')) {
+    activeElement.blur()
+  }
+}
+
+function clientOptionLabel(client: Client) {
+  return `${client.fullName}${client.documentNumber ? ` - ${client.documentNumber}` : ''}`
+}
+
+function getVisualViewportSafeBand() {
+  const vv = window.visualViewport
+  const marginTop = 28
+  const marginBottom = 28
+  if (!vv) {
+    return {
+      safeTop: marginTop,
+      safeBottom: window.innerHeight - marginBottom,
+    }
+  }
+  return {
+    safeTop: vv.offsetTop + marginTop,
+    safeBottom: vv.offsetTop + vv.height - marginBottom,
+  }
+}
+
+/** Scroll explícito del body del modal: iOS no respeta bien scrollIntoView con ancestros overflow-hidden. */
+function scrollFocusedIntoModalBody(scrollBody: HTMLElement, focused: HTMLElement) {
+  if (!scrollBody.contains(focused)) return
+  const { safeTop, safeBottom } = getVisualViewportSafeBand()
+  for (let pass = 0; pass < 8; pass++) {
+    const rect = focused.getBoundingClientRect()
+    let delta = 0
+    if (rect.bottom > safeBottom) delta += rect.bottom - safeBottom
+    if (rect.top < safeTop) delta -= safeTop - rect.top
+    if (Math.abs(delta) < 0.5) break
+    scrollBody.scrollTop += delta
+  }
+}
+
+function useMobileModalBehavior(isOpen: boolean) {
+  const modalRef = useRef<HTMLDivElement | null>(null)
+  const modalBodyRef = useRef<HTMLDivElement | null>(null)
+  const lastFocusedElementRef = useRef<HTMLElement | null>(null)
+  const scrollTimerRef = useRef<number | null>(null)
+  const followUpTimerRef = useRef<number | null>(null)
+  const lastViewportHeightRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!isOpen) return
+    const modalRoot = modalRef.current
+    if (!modalRoot) return
+    const modalEl: HTMLDivElement = modalRoot
+
+    function getScrollBody(): HTMLElement | null {
+      return modalBodyRef.current ?? modalEl.querySelector<HTMLElement>('.modal-2026-body')
+    }
+
+    function runScrollIntoBody() {
+      const scrollBody = getScrollBody()
+      const target = lastFocusedElementRef.current
+      if (!scrollBody || !target?.isConnected) return
+      if (!modalEl.contains(target)) return
+      scrollFocusedIntoModalBody(scrollBody, target)
+    }
+
+    function scheduleScrollFocused(element: HTMLElement, delayMs: number) {
+      lastFocusedElementRef.current = element
+      if (scrollTimerRef.current != null) window.clearTimeout(scrollTimerRef.current)
+      if (followUpTimerRef.current != null) window.clearTimeout(followUpTimerRef.current)
+
+      scrollTimerRef.current = window.setTimeout(() => {
+        window.requestAnimationFrame(() => {
+          runScrollIntoBody()
+          window.requestAnimationFrame(runScrollIntoBody)
+        })
+      }, delayMs)
+
+      followUpTimerRef.current = window.setTimeout(() => {
+        window.requestAnimationFrame(runScrollIntoBody)
+      }, delayMs + 220)
+    }
+
+    function bringFocusedFieldIntoView(event: FocusEvent) {
+      const target = event.target as HTMLElement | null
+      if (!target) return
+      if (!modalEl.contains(target)) return
+      const isNativeField = target.matches('input, textarea, select, [contenteditable="true"]')
+      const isFancySelectTrigger = target.matches('button.fancy-select-trigger')
+      if (!isNativeField && !isFancySelectTrigger) return
+      // Esperar a que el teclado termine de animar (iPhone Safari).
+      scheduleScrollFocused(target, 460)
+    }
+
+    function handleViewportResize() {
+      const viewport = window.visualViewport
+      const viewportHeight = viewport?.height ?? window.innerHeight
+      const keyboardOffset = viewport ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop) : 0
+      const innerH = window.innerHeight
+      const keyboardLikely = innerH - viewportHeight > 110 || (viewport != null && viewport.offsetTop > 48)
+
+      document.documentElement.style.setProperty('--app-viewport-height', `${viewportHeight}px`)
+      modalEl.style.setProperty('--vvh', `${viewportHeight}px`)
+      modalEl.style.setProperty('--kb-offset', `${keyboardOffset}px`)
+      modalEl.setAttribute('data-keyboard-open', keyboardLikely ? 'true' : 'false')
+
+      const previousHeight = lastViewportHeightRef.current
+      lastViewportHeightRef.current = viewportHeight
+      const focused = lastFocusedElementRef.current
+      if (focused && previousHeight != null) {
+        const delta = Math.abs(viewportHeight - previousHeight)
+        if (delta > 48) {
+          window.requestAnimationFrame(() => {
+            runScrollIntoBody()
+            window.requestAnimationFrame(runScrollIntoBody)
+          })
+        }
+      }
+    }
+
+    const previousBodyOverflow = document.body.style.overflow
+    const previousBodyOverscroll = document.body.style.overscrollBehaviorY
+    const previousHtmlOverscroll = document.documentElement.style.overscrollBehaviorY
+    document.body.style.overflow = 'hidden'
+    document.body.style.overscrollBehaviorY = 'none'
+    document.documentElement.style.overscrollBehaviorY = 'none'
+    modalEl.addEventListener('focusin', bringFocusedFieldIntoView)
+    window.visualViewport?.addEventListener('resize', handleViewportResize)
+    window.visualViewport?.addEventListener('scroll', handleViewportResize)
+    window.addEventListener('resize', handleViewportResize)
+    handleViewportResize()
+
+    return () => {
+      modalEl.removeEventListener('focusin', bringFocusedFieldIntoView)
+      window.visualViewport?.removeEventListener('resize', handleViewportResize)
+      window.visualViewport?.removeEventListener('scroll', handleViewportResize)
+      window.removeEventListener('resize', handleViewportResize)
+      if (scrollTimerRef.current != null) window.clearTimeout(scrollTimerRef.current)
+      if (followUpTimerRef.current != null) window.clearTimeout(followUpTimerRef.current)
+      document.body.style.overflow = previousBodyOverflow
+      document.body.style.overscrollBehaviorY = previousBodyOverscroll
+      document.documentElement.style.overscrollBehaviorY = previousHtmlOverscroll
+      document.documentElement.style.removeProperty('--app-viewport-height')
+      modalEl.removeAttribute('data-keyboard-open')
+      modalEl.style.removeProperty('--kb-offset')
+      modalEl.style.removeProperty('--vvh')
+    }
+  }, [isOpen])
+
+  function handlePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    const target = event.target as HTMLElement | null
+    if (!target?.closest('input, textarea, select, [contenteditable="true"]')) {
+      blurActiveEditableElement()
+    }
+  }
+
+  return { modalRef, modalBodyRef, handlePointerDown }
+}
+
 function TimePickerField({
   value,
   onChange,
@@ -260,7 +410,15 @@ function TimePickerField({
 
   return (
     <div className={`time-picker ${isOpen ? 'open' : ''}`} ref={wrapperRef}>
-      <input className="time-picker-native-proxy" readOnly required={required} type="time" value={value} />
+      <input
+        aria-hidden="true"
+        className="time-picker-native-proxy"
+        readOnly
+        required={required}
+        tabIndex={-1}
+        type="text"
+        value={value}
+      />
       <button className="time-picker-trigger" onClick={() => setIsOpen((current) => !current)} type="button">
         <span>{value || '--:--'}</span>
         <Clock size={16} />
@@ -342,16 +500,17 @@ const emptyEvent: EventPayload = {
 }
 
 const emptyInventoryItem: InventoryPayload = {
-  floorId: '',
-  name: '',
-  category: 'Mesas y sillas',
-  quantity: 1,
-  unitCost: 0,
-  specificLocation: '',
-  minimumQuantity: 0,
-  conditionStatus: 'GOOD',
-  purchaseDate: '',
-  notes: '',
+  piso: '1er Piso',
+  categoriaId: '',
+  subcategoriaId: '',
+  nombre: '',
+  descripcion: '',
+  cantidad: 1,
+  unidadMedida: 'unidad',
+  valorTotal: 0,
+  estado: 'Disponible',
+  ubicacion: '',
+  observacion: '',
 }
 
 const money = new Intl.NumberFormat('es-PE', {
@@ -387,6 +546,13 @@ const createdAtTime = new Intl.DateTimeFormat('es-PE', {
   hour12: true,
 })
 
+/** Hora corta 24 h para filas compactas (evita partir "p. m." en la tabla). */
+const createdAtTime24h = new Intl.DateTimeFormat('es-PE', {
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+})
+
 function parseDateKey(value: string) {
   const [year, month, day] = value.split('-').map(Number)
   return new Date(year, month - 1, day)
@@ -408,6 +574,27 @@ function createdLabel(value?: string) {
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return 'Fecha de creación no disponible'
   return `Creado el ${createdAtDate.format(parsed)}, ${createdAtTime.format(parsed)}`
+}
+
+/** Fecha del evento DD/MM/AAAA para tablas densas (laptop ~14"). */
+function formatEventDateNumeric(isoKey: string) {
+  return new Intl.DateTimeFormat('es-PE', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(parseDateKey(isoKey))
+}
+
+function createdCompactForTable(value?: string) {
+  if (!value) return 'Sin fecha de registro'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return 'Sin fecha de registro'
+  const numericDate = new Intl.DateTimeFormat('es-PE', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(parsed)
+  return `Reg. ${numericDate} · ${createdAtTime24h.format(parsed)}`
 }
 
 function monthHintFromDateKey(value: string) {
@@ -573,19 +760,51 @@ const apdaycStatusLabels: Record<ApdaycStatus, string> = {
   NOT_APPLIES: 'No aplica',
 }
 
-const inventoryConditionLabels: Record<InventoryCondition, string> = {
-  GOOD: 'Bueno',
-  REGULAR: 'Regular',
-  DAMAGED: 'Dañado',
-  LOST: 'Perdido',
-  IN_REPAIR: 'En reparación',
+type EventCancellationType = 'CLIENT_REQUEST' | 'FORCE_MAJEURE' | 'NO_SHOW' | 'RESCHEDULE_REQUEST_REJECTED'
+
+const eventCancellationTypes: EventCancellationType[] = [
+  'CLIENT_REQUEST',
+  'FORCE_MAJEURE',
+  'NO_SHOW',
+  'RESCHEDULE_REQUEST_REJECTED',
+]
+
+const eventCancellationTypeLabels: Record<EventCancellationType, string> = {
+  CLIENT_REQUEST: 'Solicitud del cliente',
+  FORCE_MAJEURE: 'Fuerza mayor o caso fortuito',
+  NO_SHOW: 'Inasistencia (no show)',
+  RESCHEDULE_REQUEST_REJECTED: 'Solicitud de reprogramación rechazada',
 }
 
-const workerCategoryLabels: Record<WorkerCategory, string> = {
-  MOZOS: 'Mozos',
-  FOTOGRAFOS: 'Fotógrafos',
-  TORTAS: 'Tortas y repostería',
-  OTROS: 'Otros proveedores',
+const inventoryStatusLabels: Record<InventoryStatus, string> = {
+  Disponible: 'Disponible',
+  'En uso': 'En uso',
+  Mantenimiento: 'Mantenimiento',
+  Dañado: 'Dañado',
+  Perdido: 'Perdido',
+  Retirado: 'Retirado',
+}
+
+const inventoryStatusClassNames: Record<InventoryStatus, string> = {
+  Disponible: 'status-available',
+  'En uso': 'status-in-use',
+  Mantenimiento: 'status-maintenance',
+  Dañado: 'status-damaged',
+  Perdido: 'status-lost',
+  Retirado: 'status-retired',
+}
+
+const quantityFormatter = new Intl.NumberFormat('es-PE', {
+  maximumFractionDigits: 2,
+  minimumFractionDigits: 0,
+})
+
+function formatQuantity(value: number): string {
+  return quantityFormatter.format(Number(value || 0))
+}
+
+function inventoryStatusClass(status: InventoryStatus): string {
+  return inventoryStatusClassNames[status] ?? 'status-available'
 }
 
 /** Prioriza WhatsApp (contacto habitual para el contrato); si falta, usa teléfono. */
@@ -611,7 +830,9 @@ function App() {
       'packages',
       'floors',
       'inventory',
+      'inventoryCreate',
       'workers',
+      'workersCreate',
       'ai',
       'settings',
     ]
@@ -672,6 +893,8 @@ function App() {
           setClients(clientList)
           setPackages(packageList)
           setInventory(inventoryData)
+          const firstInventoryCategory = inventoryData.categories[0]
+          const firstInventorySubcategory = firstInventoryCategory?.subcategorias[0]
           setEventForm((current) => ({
             ...current,
             clientId: current.clientId || clientList[0]?.id || '',
@@ -680,7 +903,9 @@ function App() {
           }))
           setInventoryForm((current) => ({
             ...current,
-            floorId: current.floorId || floorList[0]?.id || '',
+            piso: current.piso || floorList[0]?.name || '1er Piso',
+            categoriaId: current.categoriaId || firstInventoryCategory?.id || '',
+            subcategoriaId: current.subcategoriaId || firstInventorySubcategory?.id || '',
           }))
         })
         .catch((err) => {
@@ -802,6 +1027,11 @@ function App() {
     setError('')
     try {
       const selectedClient = clients.find((item) => item.id === eventForm.clientId)
+      if (!selectedClient) {
+        setError('Selecciona un cliente de la lista antes de guardar la reserva.')
+        setView('events')
+        return
+      }
       const contractContact = contractualContactNumber(selectedClient)
 
       if (!contractContact) {
@@ -838,13 +1068,18 @@ function App() {
     try {
       await api.createInventoryItem({
         ...inventoryForm,
-        floorId: inventoryForm.floorId || undefined,
-        quantity: Number(inventoryForm.quantity),
-        unitCost: Number(inventoryForm.unitCost),
-        minimumQuantity: Number(inventoryForm.minimumQuantity),
-        purchaseDate: inventoryForm.purchaseDate || undefined,
+        descripcion: inventoryForm.descripcion || undefined,
+        cantidad: Number(inventoryForm.cantidad),
+        valorTotal: Number(inventoryForm.valorTotal),
+        ubicacion: inventoryForm.ubicacion || undefined,
+        observacion: inventoryForm.observacion || undefined,
       })
-      setInventoryForm((current) => ({ ...emptyInventoryItem, floorId: current.floorId }))
+      setInventoryForm((current) => ({
+        ...emptyInventoryItem,
+        piso: current.piso,
+        categoriaId: current.categoriaId,
+        subcategoriaId: current.subcategoriaId,
+      }))
       setMessage('Inventario registrado correctamente.')
       await loadData()
       setView('inventory')
@@ -926,7 +1161,7 @@ function App() {
   }
 
   async function removeInventoryItem(item: InventoryItem) {
-    const confirmed = window.confirm(`Quitar "${item.name}" del inventario activo?`)
+    const confirmed = window.confirm(`Quitar "${item.nombre}" del inventario activo?`)
     if (!confirmed) {
       return
     }
@@ -998,7 +1233,9 @@ function App() {
     { id: 'packages', label: 'Paquetes', icon: Package },
     { id: 'floors', label: 'Ambientes', icon: Building2 },
     { id: 'inventory', label: 'Inventario', icon: ClipboardList },
-    { id: 'workers', label: 'Trabajadores', icon: Users },
+    { id: 'inventoryCreate', label: 'Registrar articulos', icon: Plus },
+    { id: 'workers', label: 'Trabajadores registrados', icon: Users },
+    { id: 'workersCreate', label: 'Registrar trabajador', icon: Plus },
     { id: 'ai', label: 'IA', icon: Bot },
   ]
   const mobileCommandNav: Array<{ id: View; label: string; icon: typeof LayoutDashboard }> = [
@@ -1007,6 +1244,8 @@ function App() {
     { id: 'eventsRegistered', label: 'Eventos', icon: ClipboardList },
     { id: 'clientsRegistered', label: 'Clientes', icon: Users },
     { id: 'inventory', label: 'Inventario', icon: Package },
+    { id: 'inventoryCreate', label: 'Registrar', icon: Plus },
+    { id: 'workers', label: 'Equipo', icon: Users },
     { id: 'ai', label: 'IA', icon: Bot },
   ]
 
@@ -1109,7 +1348,7 @@ function App() {
             {message}
           </div>
         )}
-        {loading && <p className="empty">Cargando datos desde Supabase...</p>}
+        {loading && <p className="empty">Cargando datos desde el servidor…</p>}
 
         {!loading && view === 'dashboard' && <Dashboard summary={summary} events={events} />}
         {!loading && view === 'events' && (
@@ -1125,7 +1364,8 @@ function App() {
             openRegisteredEvents={() => setView('eventsRegistered')}
           />
         )}
-        {!loading && view === 'workers' && <WorkersView />}
+        {!loading && view === 'workers' && <WorkersView mode="registered" />}
+        {!loading && view === 'workersCreate' && <WorkersView mode="create" />}
         {!loading && view === 'eventsRegistered' && (
           <section className="grid">
             <div className="panel">
@@ -1276,6 +1516,18 @@ function App() {
             floors={floors}
             inventory={inventory}
             inventoryForm={inventoryForm}
+            mode="list"
+            updateInventory={updateInventory}
+            submitInventory={submitInventory}
+            removeInventoryItem={removeInventoryItem}
+          />
+        )}
+        {!loading && view === 'inventoryCreate' && (
+          <InventoryView
+            floors={floors}
+            inventory={inventory}
+            inventoryForm={inventoryForm}
+            mode="create"
             updateInventory={updateInventory}
             submitInventory={submitInventory}
             removeInventoryItem={removeInventoryItem}
@@ -1313,8 +1565,10 @@ function titleFor(view: View) {
     clientsRegistered: 'Clientes registrados',
     packages: 'Paquetes comerciales',
     floors: 'Ambientes del local',
-    inventory: 'Inventario y valorización',
-    workers: 'Trabajadores y proveedores',
+    inventory: 'Inventario',
+    inventoryCreate: 'Registrar articulos',
+    workers: 'Trabajadores registrados',
+    workersCreate: 'Registrar trabajador',
     ai: 'Herramientas inteligentes',
     settings: 'Configuración del sistema',
   }
@@ -1514,129 +1768,6 @@ function SettingsView() {
   )
 }
 
-function WorkersView() {
-  const [category, setCategory] = useState<WorkerCategory>('MOZOS')
-  const [name, setName] = useState('')
-  const [phone, setPhone] = useState('')
-  const [notes, setNotes] = useState('')
-  const [notice, setNotice] = useState('')
-  const [directory, setDirectory] = useState<WorkerContact[]>(() => {
-    if (typeof window === 'undefined') return []
-    try {
-      const raw = window.localStorage.getItem(WORKERS_STORAGE_KEY)
-      if (!raw) return []
-      const parsed = JSON.parse(raw) as WorkerContact[]
-      return Array.isArray(parsed) ? parsed : []
-    } catch {
-      return []
-    }
-  })
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(WORKERS_STORAGE_KEY, JSON.stringify(directory))
-    }
-  }, [directory])
-
-  const filtered = directory.filter((item) => item.category === category)
-
-  function addWorker(event: FormEvent) {
-    event.preventDefault()
-    if (!name.trim() || !phone.trim()) {
-      setNotice('Completa nombre y teléfono/WhatsApp.')
-      return
-    }
-    const entry: WorkerContact = {
-      id: crypto.randomUUID(),
-      category,
-      name: name.trim(),
-      phone: phone.trim(),
-      notes: notes.trim(),
-    }
-    setDirectory((current) => [entry, ...current])
-    setName('')
-    setPhone('')
-    setNotes('')
-    setNotice('Contacto agregado.')
-  }
-
-  function removeWorker(id: string) {
-    const confirmed = window.confirm('¿Quitar este contacto de trabajadores?')
-    if (!confirmed) return
-    setDirectory((current) => current.filter((item) => item.id !== id))
-  }
-
-  return (
-    <section className="grid">
-      <div className="panel">
-        <h2>Directorio de trabajadores</h2>
-        <p className="settings-intro">
-          Guarda tus contactos clave para cada evento: mozos, fotógrafos, tortas y proveedores de confianza.
-        </p>
-        {notice && <p className="message ok">{notice}</p>}
-        <div className="tabs">
-          {(Object.keys(workerCategoryLabels) as WorkerCategory[]).map((key) => (
-            <button
-              className={`tab ${category === key ? 'active' : ''}`}
-              key={key}
-              onClick={() => setCategory(key)}
-              type="button"
-            >
-              {workerCategoryLabels[key]}
-            </button>
-          ))}
-        </div>
-        <form onSubmit={addWorker}>
-          <div className="form-grid">
-            <label>
-              Nombre
-              <input onChange={(e) => setName(e.target.value)} placeholder="Ej: José Ramírez" value={name} />
-            </label>
-            <label>
-              Teléfono / WhatsApp
-              <input onChange={(e) => setPhone(e.target.value)} placeholder="Ej: 987654321" value={phone} />
-            </label>
-            <label className="full">
-              Notas
-              <textarea
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Precio, puntualidad, especialidad, redes, etc."
-                value={notes}
-              />
-            </label>
-          </div>
-          <div className="form-actions">
-            <button className="btn primary" type="submit">
-              <Save size={16} />
-              Guardar contacto
-            </button>
-          </div>
-        </form>
-      </div>
-
-      <div className="panel">
-        <h2>{workerCategoryLabels[category]}</h2>
-        {filtered.length === 0 && <p className="empty">Aún no hay contactos en esta categoría.</p>}
-        <div className="workers-grid">
-          {filtered.map((item) => (
-            <article className="worker-card" key={item.id}>
-              <h3>{item.name}</h3>
-              <p>
-                <Phone size={14} /> {item.phone}
-              </p>
-              {item.notes && <p>{item.notes}</p>}
-              <button className="btn danger" onClick={() => removeWorker(item.id)} type="button">
-                <Trash2 size={14} />
-                Quitar
-              </button>
-            </article>
-          ))}
-        </div>
-      </div>
-    </section>
-  )
-}
-
 function Dashboard({ summary, events }: { summary: DashboardSummary | null; events: EventItem[] }) {
   const todayKey = dateKey(new Date())
   const firstUpcomingDate = [...events]
@@ -1736,8 +1867,8 @@ function Dashboard({ summary, events }: { summary: DashboardSummary | null; even
         return next
       })
       await downloadEventContractPdf(preview)
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'No se pudo descargar el contrato.')
+    } catch {
+      alert('No se pudo descargar el contrato. Intente nuevamente.')
     } finally {
       setDownloadingId(null)
     }
@@ -1871,7 +2002,7 @@ function Dashboard({ summary, events }: { summary: DashboardSummary | null; even
               type="button"
             >
               <Download size={15} />
-              {downloadingId === event.id ? 'Generando...' : 'PDF'}
+              {downloadingId === event.id ? 'Preparando PDF...' : 'Descargar contrato PDF'}
             </button>
           </div>
         </div>
@@ -2224,7 +2355,7 @@ function Dashboard({ summary, events }: { summary: DashboardSummary | null; even
                           type="button"
                         >
                           <Download size={15} />
-                          {downloadingId === event.id ? 'Generando...' : 'PDF'}
+                          {downloadingId === event.id ? 'Preparando PDF...' : 'Descargar contrato PDF'}
                         </button>
                       </div>
                     </>
@@ -2281,7 +2412,7 @@ function Dashboard({ summary, events }: { summary: DashboardSummary | null; even
                   type="button"
                 >
                   <Download size={15} />
-                  {downloadingId === quickViewEvent.id ? 'Generando...' : 'Descargar PDF'}
+                  {downloadingId === quickViewEvent.id ? 'Preparando PDF...' : 'Descargar contrato PDF'}
                 </button>
               </div>
             </div>
@@ -2368,13 +2499,17 @@ function EventsView({
   const selectedFloor = floors.find((item) => item.id === eventForm.floorId)
   const suggestedCapacity = selectedPackage?.includedCapacity ?? selectedFloor?.capacity ?? null
   const [clientSearch, setClientSearch] = useState('')
+  const [isClientResultsOpen, setIsClientResultsOpen] = useState(false)
   const [isQuickClientOpen, setIsQuickClientOpen] = useState(false)
   const [quickClientSaving, setQuickClientSaving] = useState(false)
   const [quickLookupBusy, setQuickLookupBusy] = useState(false)
   const [quickLookupMessage, setQuickLookupMessage] = useState('')
   const [quickClientError, setQuickClientError] = useState('')
   const quickLookupKeyRef = useRef('')
-  const quickModalCardRef = useRef<HTMLDivElement | null>(null)
+  const clientSearchInputRef = useRef<HTMLInputElement | null>(null)
+  const suppressQuickClientOpenUntilRef = useRef(0)
+  /** Tras elegir cliente: evita tap-through / ghost click en el FancySelect de Ambiente (móvil). */
+  const suppressFloorSelectInteractionUntilRef = useRef(0)
   const [quickClientForm, setQuickClientForm] = useState<ClientPayload>({
     fullName: '',
     documentType: 'DNI',
@@ -2385,6 +2520,7 @@ function EventsView({
     address: '',
     notes: '',
   })
+  const quickClientModal = useMobileModalBehavior(isQuickClientOpen)
   const filteredClients = useMemo(() => {
     const term = clientSearch.trim().toLowerCase()
     if (!term) return clients
@@ -2396,6 +2532,48 @@ function EventsView({
       return name.includes(term) || doc.includes(term) || phone.includes(term) || whatsapp.includes(term)
     })
   }, [clients, clientSearch])
+  const selectedClient = clients.find((client) => client.id === eventForm.clientId)
+  const visibleClientSuggestions = filteredClients.slice(0, 8)
+
+  function updateClientSearch(nextValue: string) {
+    setClientSearch(nextValue)
+    setIsClientResultsOpen(true)
+    if (selectedClient && nextValue.trim() !== clientOptionLabel(selectedClient)) {
+      updateEvent('clientId', '')
+    }
+  }
+
+  function selectClient(client: Client) {
+    suppressQuickClientOpenUntilRef.current = Date.now() + 600
+    suppressFloorSelectInteractionUntilRef.current = Date.now() + 420
+    updateEvent('clientId', client.id)
+    setClientSearch(clientOptionLabel(client))
+    // Cerrar la lista un instante después: si se desmonta en el mismo ciclo que el toque,
+    // el “click” fantasma puede caer sobre el campo que subió (p. ej. Ambiente).
+    window.setTimeout(() => {
+      setIsClientResultsOpen(false)
+      blurActiveEditableElement()
+    }, 80)
+  }
+
+  function eatEventIfFloorSelectSuppressed(event: React.SyntheticEvent) {
+    if (Date.now() < suppressFloorSelectInteractionUntilRef.current) {
+      event.preventDefault()
+      event.stopPropagation()
+    }
+  }
+
+  function openQuickClientModal() {
+    if (Date.now() < suppressQuickClientOpenUntilRef.current) return
+    setIsQuickClientOpen(true)
+  }
+
+  function clearSelectedClient() {
+    updateEvent('clientId', '')
+    setClientSearch('')
+    setIsClientResultsOpen(false)
+    window.setTimeout(() => clientSearchInputRef.current?.focus(), 0)
+  }
 
   async function submitQuickClient(event: FormEvent) {
     event.preventDefault()
@@ -2436,47 +2614,16 @@ function EventsView({
       const data = await api.lookupClientDocument(documentType, digitsOnly)
       setQuickClientForm((current) => ({
         ...current,
-        fullName: data.fullName || current.fullName,
-        address: data.address || current.address,
+        fullName: current.fullName || data.fullName || '',
+        address: current.address || data.address || '',
       }))
-      setQuickLookupMessage(data.fullName ? 'Datos cargados automáticamente desde Perú API.' : 'Documento válido sin nombre disponible.')
-    } catch (err) {
-      setQuickLookupMessage(err instanceof Error ? err.message : 'No se pudo consultar el documento.')
+      setQuickLookupMessage(data.fullName ? 'Datos cargados automáticamente desde Perú API.' : MANUAL_LOOKUP_FALLBACK_MESSAGE)
+    } catch {
+      setQuickLookupMessage(MANUAL_LOOKUP_FALLBACK_MESSAGE)
     } finally {
       setQuickLookupBusy(false)
     }
   }
-
-  useEffect(() => {
-    if (!isQuickClientOpen) return
-    const modal = quickModalCardRef.current
-    if (!modal) return
-
-    function bringFocusedFieldIntoView(event: FocusEvent) {
-      const target = event.target as HTMLElement | null
-      if (!target || !quickModalCardRef.current?.contains(target)) return
-      window.setTimeout(() => {
-        target.scrollIntoView({ block: 'center', behavior: 'smooth' })
-      }, 120)
-    }
-
-    function handleViewportResize() {
-      const viewport = window.visualViewport
-      if (!viewport) return
-      const keyboardOffset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)
-      quickModalCardRef.current?.style.setProperty('--kb-offset', `${keyboardOffset}px`)
-    }
-
-    modal.addEventListener('focusin', bringFocusedFieldIntoView)
-    window.visualViewport?.addEventListener('resize', handleViewportResize)
-    handleViewportResize()
-
-    return () => {
-      modal.removeEventListener('focusin', bringFocusedFieldIntoView)
-      window.visualViewport?.removeEventListener('resize', handleViewportResize)
-      quickModalCardRef.current?.style.removeProperty('--kb-offset')
-    }
-  }, [isQuickClientOpen])
 
   return (
     <section className="grid">
@@ -2491,23 +2638,67 @@ function EventsView({
           <div className="form-grid event-create-grid">
             <label>
               Cliente
-              <input
-                className="quick-client-search"
-                placeholder="Buscar cliente por nombre, DNI/RUC o teléfono"
-                value={clientSearch}
-                onChange={(e) => setClientSearch(e.target.value)}
-              />
+              <div className="client-autocomplete">
+                <div className="client-search-box">
+                  <input
+                    className="quick-client-search"
+                    placeholder="Buscar cliente por nombre, DNI/RUC o teléfono"
+                    ref={clientSearchInputRef}
+                    value={clientSearch}
+                    onBlur={(event) => {
+                      const next = event.relatedTarget as Node | null
+                      if (next && event.currentTarget.closest('.client-autocomplete')?.querySelector('.client-suggestions')?.contains(next)) {
+                        return
+                      }
+                      window.setTimeout(() => setIsClientResultsOpen(false), 160)
+                    }}
+                    onChange={(e) => updateClientSearch(e.target.value)}
+                    onFocus={() => setIsClientResultsOpen(true)}
+                  />
+                  {(clientSearch || eventForm.clientId) && (
+                    <button
+                      aria-label="Limpiar cliente"
+                      className="client-search-clear"
+                      onPointerDown={(event) => event.preventDefault()}
+                      onClick={clearSelectedClient}
+                      type="button"
+                    >
+                      <X size={16} />
+                    </button>
+                  )}
+                </div>
+                {isClientResultsOpen && clientSearch.trim() && (
+                  <div className="client-suggestions" role="listbox">
+                    {visibleClientSuggestions.length > 0 ? (
+                      visibleClientSuggestions.map((client) => (
+                        <button
+                          className={`client-suggestion ${client.id === eventForm.clientId ? 'active' : ''}`}
+                          key={client.id}
+                          onPointerDown={(event) => {
+                            // No preventDefault aquí: en iOS puede bloquear el click sintético.
+                            event.stopPropagation()
+                          }}
+                          onClick={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            selectClient(client)
+                          }}
+                          type="button"
+                        >
+                          <strong>{client.fullName}</strong>
+                          <span>
+                            {[client.documentNumber, client.phone || client.whatsapp].filter(Boolean).join(' - ') || 'Sin documento'}
+                          </span>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="client-suggestion-empty">No hay clientes con ese dato.</div>
+                    )}
+                  </div>
+                )}
+              </div>
               <div className="quick-client-field">
-                <FancySelect
-                  required
-                  value={eventForm.clientId}
-                  onChange={(nextValue) => updateEvent('clientId', nextValue)}
-                  options={filteredClients.map((client) => ({
-                    value: client.id,
-                    label: `${client.fullName}${client.documentNumber ? ` - ${client.documentNumber}` : ''}`,
-                  }))}
-                />
-                <button className="btn icon" onClick={() => setIsQuickClientOpen(true)} type="button">
+                <button className="btn icon" onClick={openQuickClientModal} type="button">
                   <Plus size={15} />
                   Nuevo cliente
                 </button>
@@ -2515,18 +2706,25 @@ function EventsView({
             </label>
             <label>
               Ambiente
-              <FancySelect
-                required
-                value={eventForm.floorId}
-                onChange={(nextFloorId) => {
-                  const floor = floors.find((item) => item.id === nextFloorId)
-                  updateEvent('floorId', nextFloorId)
-                  if (!eventForm.packageId && floor?.capacity) {
-                    updateEvent('contractCapacityOverride', Number(floor.capacity))
-                  }
-                }}
-                options={floors.map((floor) => ({ value: floor.id, label: floor.name }))}
-              />
+              <div
+                className="event-create-floor-select-shield"
+                onClickCapture={eatEventIfFloorSelectSuppressed}
+                onPointerDownCapture={eatEventIfFloorSelectSuppressed}
+                onPointerUpCapture={eatEventIfFloorSelectSuppressed}
+              >
+                <FancySelect
+                  required
+                  value={eventForm.floorId}
+                  onChange={(nextFloorId) => {
+                    const floor = floors.find((item) => item.id === nextFloorId)
+                    updateEvent('floorId', nextFloorId)
+                    if (!eventForm.packageId && floor?.capacity) {
+                      updateEvent('contractCapacityOverride', Number(floor.capacity))
+                    }
+                  }}
+                  options={floors.map((floor) => ({ value: floor.id, label: floor.name }))}
+                />
+              </div>
             </label>
             <label>
               Paquete
@@ -2690,7 +2888,8 @@ function EventsView({
         >
           <div
             className="quick-modal-card modal-2026 quick-modal-card-mobile"
-            ref={quickModalCardRef}
+            ref={quickClientModal.modalRef}
+            onPointerDownCapture={quickClientModal.handlePointerDown}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="quick-modal-head modal-2026-head">
@@ -2700,76 +2899,81 @@ function EventsView({
                 Cerrar
               </button>
             </div>
-            {quickClientError && <p className="message error">{quickClientError}</p>}
-            <form className="modal-2026-form" onSubmit={submitQuickClient}>
-              <div className="form-grid">
-                <label className="full">
-                  Nombre completo
-                  <input
-                    value={quickClientForm.fullName}
-                    onChange={(e) => setQuickClientForm((current) => ({ ...current, fullName: e.target.value }))}
-                    required
-                  />
-                </label>
-                <label>
-                  Tipo documento
-                  <FancySelect
-                    value={quickClientForm.documentType ?? 'DNI'}
-                    onChange={(nextValue) => {
-                      quickLookupKeyRef.current = ''
-                      setQuickLookupMessage('')
-                      setQuickClientForm((current) => ({
-                        ...current,
-                        documentType: nextValue as 'DNI' | 'RUC',
-                        documentNumber: '',
-                      }))
-                    }}
-                    options={[
-                      { value: 'DNI', label: 'DNI' },
-                      { value: 'RUC', label: 'RUC' },
-                    ]}
-                  />
-                </label>
-                <label>
-                  {quickClientForm.documentType === 'RUC' ? 'Número de RUC' : 'Número de DNI'}
-                  <input
-                    inputMode="numeric"
-                    maxLength={quickClientForm.documentType === 'RUC' ? 11 : 8}
-                    pattern={quickClientForm.documentType === 'RUC' ? '\\d{11}' : '\\d{8}'}
-                    value={quickClientForm.documentNumber}
-                    onChange={(e) => {
-                      const digitsOnly = e.target.value.replace(/\D/g, '')
-                      setQuickClientForm((current) => ({ ...current, documentNumber: digitsOnly }))
-                      void tryAutoLookupQuickClient((quickClientForm.documentType ?? 'DNI') as 'DNI' | 'RUC', digitsOnly)
-                    }}
-                    required
-                  />
-                  {quickLookupBusy && <small>Consultando RENIEC/SUNAT...</small>}
-                  {!quickLookupBusy && quickLookupMessage && <small>{quickLookupMessage}</small>}
-                </label>
-                <label>
-                  Teléfono
-                  <input
-                    value={quickClientForm.phone}
-                    onChange={(e) => setQuickClientForm((current) => ({ ...current, phone: e.target.value }))}
-                    required
-                  />
-                </label>
-                <label>
-                  WhatsApp
-                  <input
-                    value={quickClientForm.whatsapp}
-                    onChange={(e) => setQuickClientForm((current) => ({ ...current, whatsapp: e.target.value }))}
-                  />
-                </label>
-                <label>
-                  Correo
-                  <input
-                    type="email"
-                    value={quickClientForm.email}
-                    onChange={(e) => setQuickClientForm((current) => ({ ...current, email: e.target.value }))}
-                  />
-                </label>
+            <form className="modal-2026-form quick-client-modal-form" onSubmit={submitQuickClient}>
+              <div className="modal-2026-body" ref={quickClientModal.modalBodyRef}>
+                {quickClientError && <p className="message error">{quickClientError}</p>}
+                <div className="form-grid">
+                  <label className="full">
+                    {quickClientForm.documentType === 'RUC' ? 'Razón social o nombre del cliente' : 'Nombre completo'}
+                    <input
+                      placeholder={quickClientForm.documentType === 'RUC' ? 'Razón social o nombre comercial' : 'Nombre completo del cliente'}
+                      value={quickClientForm.fullName}
+                      onChange={(e) => setQuickClientForm((current) => ({ ...current, fullName: e.target.value }))}
+                      required
+                    />
+                  </label>
+                  <label>
+                    Tipo documento
+                    <FancySelect
+                      value={quickClientForm.documentType ?? 'DNI'}
+                      onChange={(nextValue) => {
+                        quickLookupKeyRef.current = ''
+                        setQuickLookupMessage('')
+                        setQuickClientForm((current) => ({
+                          ...current,
+                          documentType: nextValue as 'DNI' | 'RUC',
+                          documentNumber: '',
+                        }))
+                      }}
+                      options={[
+                        { value: 'DNI', label: 'DNI' },
+                        { value: 'RUC', label: 'RUC' },
+                      ]}
+                    />
+                  </label>
+                  <label>
+                    {quickClientForm.documentType === 'RUC' ? 'Número de RUC' : 'Número de DNI'}
+                    <input
+                      inputMode="numeric"
+                      maxLength={quickClientForm.documentType === 'RUC' ? 11 : 8}
+                      pattern={quickClientForm.documentType === 'RUC' ? '\\d{11}' : '\\d{8}'}
+                      value={quickClientForm.documentNumber}
+                      onChange={(e) => {
+                        const digitsOnly = e.target.value.replace(/\D/g, '')
+                        setQuickClientForm((current) => ({ ...current, documentNumber: digitsOnly }))
+                        void tryAutoLookupQuickClient((quickClientForm.documentType ?? 'DNI') as 'DNI' | 'RUC', digitsOnly)
+                      }}
+                      required
+                    />
+                    {quickLookupBusy && <small className="lookup-message">Consultando RENIEC/SUNAT...</small>}
+                    {!quickLookupBusy && quickLookupMessage && <small className="lookup-message">{quickLookupMessage}</small>}
+                  </label>
+                  <label>
+                    Teléfono
+                    <input
+                      inputMode="tel"
+                      value={quickClientForm.phone}
+                      onChange={(e) => setQuickClientForm((current) => ({ ...current, phone: e.target.value }))}
+                      required
+                    />
+                  </label>
+                  <label>
+                    WhatsApp
+                    <input
+                      inputMode="tel"
+                      value={quickClientForm.whatsapp}
+                      onChange={(e) => setQuickClientForm((current) => ({ ...current, whatsapp: e.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    Correo
+                    <input
+                      type="email"
+                      value={quickClientForm.email}
+                      onChange={(e) => setQuickClientForm((current) => ({ ...current, email: e.target.value }))}
+                    />
+                  </label>
+                </div>
               </div>
               <div className="form-actions modal-2026-actions">
                 <button className="btn ghost" onClick={() => setIsQuickClientOpen(false)} type="button">
@@ -2805,6 +3009,10 @@ function EventTable({
   const [rescheduleForm, setRescheduleForm] = useState({ eventDate: '', startTime: '', endTime: '' })
   const [rescheduleFallbackNote, setRescheduleFallbackNote] = useState<string | null>(null)
   const [sortMode, setSortMode] = useState<EventSortMode>('recent')
+  const [cancelTarget, setCancelTarget] = useState<EventItem | null>(null)
+  const [cancelCancellationType, setCancelCancellationType] = useState<EventCancellationType>('CLIENT_REQUEST')
+  const [cancelNotes, setCancelNotes] = useState('')
+  const cancelModal = useMobileModalBehavior(Boolean(cancelTarget))
   const todayKey = dateKey(new Date())
   const visibleEvents = useMemo(() => {
     const sorted = [...events]
@@ -2826,33 +3034,33 @@ function EventTable({
     try {
       const preview = await api.contractPreview(event.id)
       await downloadEventContractPdf(preview)
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'No se pudo descargar el contrato.')
+    } catch {
+      alert('No se pudo descargar el contrato. Intente nuevamente.')
     } finally {
       setDownloadingId(null)
     }
   }
 
-  async function cancelEvent(event: EventItem) {
-    if (!window.confirm(`Anular "${event.title}"?`)) return
-    const cancellationTypeInput = window.prompt(
-      'Tipo de anulación: CLIENT_REQUEST | FORCE_MAJEURE | NO_SHOW | RESCHEDULE_REQUEST_REJECTED',
-      'CLIENT_REQUEST',
-    )
-    if (!cancellationTypeInput) return
-    const cancellationType = cancellationTypeInput.trim().toUpperCase()
-    const validTypes = ['CLIENT_REQUEST', 'FORCE_MAJEURE', 'NO_SHOW', 'RESCHEDULE_REQUEST_REJECTED']
-    if (!validTypes.includes(cancellationType)) {
-      alert('Tipo de anulación no válido.')
-      return
-    }
-    const cancellationNotes = window.prompt('Motivo breve de la anulación (opcional):', '') ?? ''
-    setProcessingId(event.id)
+  function openCancelDialog(event: EventItem) {
+    setCancelTarget(event)
+    setCancelCancellationType('CLIENT_REQUEST')
+    setCancelNotes('')
+  }
+
+  function closeCancelDialog() {
+    if (cancelTarget && processingId === cancelTarget.id) return
+    setCancelTarget(null)
+  }
+
+  async function confirmCancelEvent() {
+    if (!cancelTarget) return
+    setProcessingId(cancelTarget.id)
     try {
-      const cancelled = await api.cancelEventWithContract(event.id, {
-        cancellationType: cancellationType as 'CLIENT_REQUEST' | 'FORCE_MAJEURE' | 'NO_SHOW' | 'RESCHEDULE_REQUEST_REJECTED',
-        cancellationNotes,
+      const cancelled = await api.cancelEventWithContract(cancelTarget.id, {
+        cancellationType: cancelCancellationType,
+        cancellationNotes: cancelNotes.trim(),
       })
+      setCancelTarget(null)
       await onEventUpdated()
       if ((cancelled.cancellationNoticeDays ?? 0) < 15) {
         alert(
@@ -3012,6 +3220,81 @@ function EventTable({
         </div>
       </section>
     )}
+    {cancelTarget && (
+      <div
+        aria-labelledby="cancel-event-title"
+        aria-modal="true"
+        className="quick-modal-layer"
+        role="dialog"
+        onClick={() => closeCancelDialog()}
+      >
+        <div
+          className="quick-modal-card modal-2026 quick-modal-card-mobile"
+          ref={cancelModal.modalRef}
+          onPointerDownCapture={cancelModal.handlePointerDown}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="quick-modal-head modal-2026-head">
+            <h3 id="cancel-event-title">Anular evento</h3>
+            <button
+              className="btn icon modal-close-btn"
+              disabled={processingId === cancelTarget.id}
+              onClick={() => closeCancelDialog()}
+              type="button"
+            >
+              <X size={15} />
+              Cerrar
+            </button>
+          </div>
+          <div className="modal-2026-body" ref={cancelModal.modalBodyRef}>
+            <p className="cancel-event-lead">
+              ¿Anular <strong>{cancelTarget.title}</strong>? Se actualizará el estado y pueden aplicarse retenciones según el
+              contrato.
+            </p>
+            <div className="form-grid">
+              <label className="full">
+                Tipo de anulación
+                <FancySelect
+                  value={cancelCancellationType}
+                  onChange={(nextValue) => setCancelCancellationType(nextValue as EventCancellationType)}
+                  options={eventCancellationTypes.map((value) => ({
+                    value,
+                    label: eventCancellationTypeLabels[value],
+                  }))}
+                />
+              </label>
+              <label className="full">
+                Notas (opcional)
+                <textarea
+                  placeholder="Ej. Cliente avisó por WhatsApp el..."
+                  rows={3}
+                  value={cancelNotes}
+                  onChange={(e) => setCancelNotes(e.target.value)}
+                />
+              </label>
+            </div>
+          </div>
+          <div className="form-actions modal-2026-actions">
+            <button
+              className="btn ghost"
+              disabled={processingId === cancelTarget.id}
+              onClick={() => closeCancelDialog()}
+              type="button"
+            >
+              Volver
+            </button>
+            <button
+              className="btn danger"
+              disabled={processingId === cancelTarget.id}
+              onClick={() => void confirmCancelEvent()}
+              type="button"
+            >
+              {processingId === cancelTarget.id ? 'Anulando…' : 'Confirmar anulación'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
     <div className="event-table-toolbar">
       <div>
         <span>{sortMode === 'recent' ? 'Últimos eventos creados' : 'Eventos por fecha (no anulados)'}</span>
@@ -3039,10 +3322,14 @@ function EventTable({
       </div>
     </div>
     <div className="table-wrap desktop-table">
-      <table>
+      <table className="events-registry-table">
+        <colgroup>
+          <col className="ercol-date" />
+          <col span={7} />
+        </colgroup>
         <thead>
           <tr>
-            <th>Fecha</th>
+            <th className="event-date-col">Fecha</th>
             <th>Evento</th>
             <th>Cliente</th>
             <th>Ambiente</th>
@@ -3055,14 +3342,16 @@ function EventTable({
         <tbody>
           {visibleEvents.map((event) => (
             <tr key={event.id}>
-              <td>
-                {event.eventDate}
-                <br />
-                <small>
-                  {event.startTime} - {event.endTime}
-                </small>
-                <br />
-                <small>{createdLabel(event.createdAt)}</small>
+              <td className="event-date-col" title={createdLabel(event.createdAt)}>
+                <div className="event-date-cell-inner">
+                  <div className="event-date-row event-date-row-primary">
+                    <span className="event-date-main">{formatEventDateNumeric(event.eventDate)}</span>
+                    <span className="event-time-range">
+                      {shortTime(event.startTime)}–{shortTime(event.endTime)}
+                    </span>
+                  </div>
+                  <div className="event-date-row event-date-row-reg">{createdCompactForTable(event.createdAt)}</div>
+                </div>
               </td>
               <td>
                 <strong>{event.title}</strong>
@@ -3080,7 +3369,8 @@ function EventTable({
                 <br />
                 <small>{apdaycStatusLabels[event.apdaycStatus]}</small>
               </td>
-              <td className="actions-cell">
+              <td className="actions-cell event-actions-compact-wrap">
+                <div className="event-actions-buttons">
                 <button
                   className="btn icon"
                   onClick={() => onEditRequested?.(event)}
@@ -3099,7 +3389,7 @@ function EventTable({
                 <button
                   className="btn icon danger"
                   disabled={processingId === event.id}
-                  onClick={() => void cancelEvent(event)}
+                  onClick={() => openCancelDialog(event)}
                   type="button"
                 >
                   Anular
@@ -3112,8 +3402,9 @@ function EventTable({
                   type="button"
                 >
                   <Download size={16} />
-                  {downloadingId === event.id ? 'Generando' : 'PDF'}
+                  {downloadingId === event.id ? 'Preparando PDF...' : 'Descargar contrato PDF'}
                 </button>
+                </div>
               </td>
             </tr>
           ))}
@@ -3177,7 +3468,7 @@ function EventTable({
             <button
               className="btn icon danger"
               disabled={processingId === event.id}
-              onClick={() => void cancelEvent(event)}
+              onClick={() => openCancelDialog(event)}
               type="button"
             >
               Anular
@@ -3190,7 +3481,7 @@ function EventTable({
               type="button"
             >
               <Download size={16} />
-              {downloadingId === event.id ? 'Generando PDF' : 'Descargar PDF'}
+              {downloadingId === event.id ? 'Preparando PDF...' : 'Descargar contrato PDF'}
             </button>
           </div>
         </article>
@@ -3268,11 +3559,11 @@ function ClientsView({
     setCreateLookupBusy(true)
     try {
       const data = await api.lookupClientDocument(documentType, digitsOnly)
-      updateClient('fullName', data.fullName || '')
-      if (data.address) updateClient('address', data.address)
-      setCreateLookupMessage(data.fullName ? 'Datos cargados automáticamente desde Perú API.' : 'Documento válido sin nombre disponible.')
-    } catch (err) {
-      setCreateLookupMessage(err instanceof Error ? err.message : 'No se pudo consultar el documento.')
+      if (data.fullName && !clientForm.fullName.trim()) updateClient('fullName', data.fullName)
+      if (data.address && !clientForm.address?.trim()) updateClient('address', data.address)
+      setCreateLookupMessage(data.fullName ? 'Datos cargados automáticamente desde Perú API.' : MANUAL_LOOKUP_FALLBACK_MESSAGE)
+    } catch {
+      setCreateLookupMessage(MANUAL_LOOKUP_FALLBACK_MESSAGE)
     } finally {
       setCreateLookupBusy(false)
     }
@@ -3525,6 +3816,7 @@ function InventoryView({
   floors,
   inventory,
   inventoryForm,
+  mode,
   updateInventory,
   submitInventory,
   removeInventoryItem,
@@ -3532,134 +3824,160 @@ function InventoryView({
   floors: Floor[]
   inventory: InventoryDashboard | null
   inventoryForm: InventoryPayload
+  mode: 'list' | 'create'
   updateInventory: <K extends keyof InventoryPayload>(key: K, value: InventoryPayload[K]) => void
   submitInventory: (event: FormEvent) => Promise<void>
   removeInventoryItem: (item: InventoryItem) => Promise<void>
 }) {
-  const [floorFilter, setFloorFilter] = useState('ALL')
+  const [pisoFilter, setPisoFilter] = useState('ALL')
+  const [categoryFilter, setCategoryFilter] = useState('ALL')
+  const categories = inventory?.categories ?? []
+  const selectedCategory = categories.find((category) => category.id === inventoryForm.categoriaId)
+  const subcategoryOptions = selectedCategory?.subcategorias ?? []
+  const formUnitValue =
+    Number(inventoryForm.cantidad || 0) > 0 ? Number(inventoryForm.valorTotal || 0) / Number(inventoryForm.cantidad) : 0
+  const pisoOptions = useMemo(() => {
+    const values = new Set<string>()
+    values.add('1er Piso')
+    floors.forEach((floor) => {
+      if (floor.name) values.add(floor.name)
+    })
+    inventory?.items.forEach((item) => {
+      if (item.piso) values.add(item.piso)
+    })
+    if (inventoryForm.piso) values.add(inventoryForm.piso)
+    return Array.from(values).map((value) => ({ value, label: value }))
+  }, [floors, inventory, inventoryForm.piso])
   const filteredItems = useMemo(
     () => {
       const items = inventory?.items ?? []
-      return floorFilter === 'ALL' ? items : items.filter((item) => (item.floorId ?? 'NONE') === floorFilter)
+      return items.filter((item) => {
+        const matchesPiso = pisoFilter === 'ALL' || item.piso === pisoFilter
+        const matchesCategory = categoryFilter === 'ALL' || item.categoriaId === categoryFilter
+        return matchesPiso && matchesCategory
+      })
     },
-    [floorFilter, inventory],
+    [categoryFilter, pisoFilter, inventory],
   )
-  const filteredValue = filteredItems.reduce((total, item) => total + Number(item.totalCost ?? 0), 0)
-  const filteredQuantity = filteredItems.reduce((total, item) => total + Number(item.quantity ?? 0), 0)
+  const filteredValue = filteredItems.reduce((total, item) => total + Number(item.valorTotal ?? 0), 0)
+  const filteredQuantity = filteredItems.reduce((total, item) => total + Number(item.cantidad ?? 0), 0)
 
   return (
-    <section className="grid inventory-layout">
-      <div className="panel">
-        <h2>Registrar artículo del local</h2>
+    <section className={`grid inventory-layout ${mode === 'create' ? 'inventory-create-layout' : 'inventory-list-layout'}`}>
+      {mode === 'create' && (
+      <div className="panel inventory-create-panel">
+        <h2>Registrar articulos</h2>
         <form onSubmit={submitInventory}>
           <div className="form-grid">
             <label>
-              Ambiente
+              Piso
               <FancySelect
-                value={inventoryForm.floorId ?? ''}
-                onChange={(nextValue) => updateInventory('floorId', nextValue)}
+                value={inventoryForm.piso}
+                onChange={(nextValue) => updateInventory('piso', nextValue)}
                 required
-                options={floors.map((floor) => ({ value: floor.id, label: floor.name }))}
+                options={pisoOptions}
               />
             </label>
             <label>
               Categoria
               <FancySelect
-                value={inventoryForm.category ?? ''}
-                onChange={(nextValue) => updateInventory('category', nextValue)}
-                options={[
-                  { value: 'Mesas y sillas', label: 'Mesas y sillas' },
-                  { value: 'Menaje', label: 'Menaje' },
-                  { value: 'Decoracion', label: 'Decoracion' },
-                  { value: 'Sonido e iluminacion', label: 'Sonido e iluminacion' },
-                  { value: 'Cocina y bar', label: 'Cocina y bar' },
-                  { value: 'Limpieza', label: 'Limpieza' },
-                  { value: 'Seguridad', label: 'Seguridad' },
-                  { value: 'Otro', label: 'Otro' },
-                ]}
+                value={inventoryForm.categoriaId}
+                onChange={(nextValue) => {
+                  const nextCategory = categories.find((category) => category.id === nextValue)
+                  updateInventory('categoriaId', nextValue)
+                  updateInventory('subcategoriaId', nextCategory?.subcategorias[0]?.id ?? '')
+                }}
+                required
+                options={categories.map((category) => ({ value: category.id, label: category.nombre }))}
+              />
+            </label>
+            <label>
+              Subcategoria
+              <FancySelect
+                value={inventoryForm.subcategoriaId}
+                onChange={(nextValue) => updateInventory('subcategoriaId', nextValue)}
+                required
+                options={subcategoryOptions.map((subcategory) => ({
+                  value: subcategory.id,
+                  label: subcategory.nombre,
+                }))}
               />
             </label>
             <label className="full">
-              Artículo
+              Item especifico
               <input
-                value={inventoryForm.name}
-                onChange={(event) => updateInventory('name', event.target.value)}
-                placeholder="Ejemplo: Mesa redonda, silla Tiffany, parlante, mantel"
+                value={inventoryForm.nombre}
+                onChange={(event) => updateInventory('nombre', event.target.value)}
+                placeholder="Ejemplo: Mesas con base de acero y vidrio"
                 required
               />
             </label>
             <label>
               Cantidad
               <input
-                min="0"
-                step="1"
+                min="0.01"
+                step="0.01"
                 type="number"
-                value={inventoryForm.quantity}
-                onChange={(event) => updateInventory('quantity', Number(event.target.value))}
+                value={inventoryForm.cantidad}
+                onChange={(event) => updateInventory('cantidad', Number(event.target.value))}
                 required
               />
             </label>
             <label>
-              Costo unitario
+              Unidad
+              <input
+                value={inventoryForm.unidadMedida}
+                onChange={(event) => updateInventory('unidadMedida', event.target.value)}
+                placeholder="unidad, juego, metro"
+                required
+              />
+            </label>
+            <label>
+              Valor total
               <input
                 min="0"
                 step="0.01"
                 type="number"
-                value={inventoryForm.unitCost}
-                onChange={(event) => updateInventory('unitCost', Number(event.target.value))}
+                value={inventoryForm.valorTotal}
+                onChange={(event) => updateInventory('valorTotal', Number(event.target.value))}
                 required
-              />
-            </label>
-            <label>
-              Stock minimo
-              <input
-                min="0"
-                step="1"
-                type="number"
-                value={inventoryForm.minimumQuantity}
-                onChange={(event) => updateInventory('minimumQuantity', Number(event.target.value))}
               />
             </label>
             <label>
               Estado
               <FancySelect
-                value={inventoryForm.conditionStatus}
-                onChange={(nextValue) => updateInventory('conditionStatus', nextValue as InventoryCondition)}
-                options={Object.entries(inventoryConditionLabels).map(([value, label]) => ({ value, label }))}
+                value={inventoryForm.estado}
+                onChange={(nextValue) => updateInventory('estado', nextValue as InventoryStatus)}
+                options={Object.entries(inventoryStatusLabels).map(([value, label]) => ({ value, label }))}
               />
             </label>
             <label>
-              Fecha de compra
-              <DatePicker
-                calendarClassName="fancy-datepicker"
-                className="fancy-date-input"
-                dateFormat="dd/MM/yyyy"
-                locale="es"
-                onChange={(date: Date | null) => updateInventory('purchaseDate', formatYmdDate(date))}
-                placeholderText="Seleccionar fecha"
-                selected={parseYmdDate(inventoryForm.purchaseDate ?? '')}
-              />
-            </label>
-            <label>
-              Ubicación específica
+              Ubicacion
               <input
-                value={inventoryForm.specificLocation}
-                onChange={(event) => updateInventory('specificLocation', event.target.value)}
-                placeholder="Deposito, salon principal, barra, cabina DJ"
+                value={inventoryForm.ubicacion}
+                onChange={(event) => updateInventory('ubicacion', event.target.value)}
+                placeholder="Salon principal, deposito, barra"
+              />
+            </label>
+            <label>
+              Descripcion
+              <input
+                value={inventoryForm.descripcion}
+                onChange={(event) => updateInventory('descripcion', event.target.value)}
+                placeholder="Material, medida, color o uso"
               />
             </label>
             <label className="full">
               Observaciones
               <textarea
-                value={inventoryForm.notes}
-                onChange={(event) => updateInventory('notes', event.target.value)}
+                value={inventoryForm.observacion}
+                onChange={(event) => updateInventory('observacion', event.target.value)}
                 placeholder="Marca, color, medidas, si está prestado, roto o pendiente de comprar."
               />
             </label>
           </div>
           <div className="inventory-form-total">
-            Total valorizado de este registro:{' '}
-            <strong>{money.format(Number(inventoryForm.quantity || 0) * Number(inventoryForm.unitCost || 0))}</strong>
+            Valor unitario calculado: <strong>{money.format(formUnitValue)}</strong>
           </div>
           <div className="form-actions">
             <button className="btn primary" type="submit">
@@ -3669,7 +3987,9 @@ function InventoryView({
           </div>
         </form>
       </div>
+      )}
 
+      {mode === 'list' && (
       <div className="panel">
         <h2>Resumen contable</h2>
         <section className="inventory-summary">
@@ -3679,7 +3999,7 @@ function InventoryView({
           </article>
           <article>
             <span>Cantidad total</span>
-            <strong>{inventory?.summary.totalQuantity ?? 0}</strong>
+            <strong>{formatQuantity(inventory?.summary.totalQuantity ?? 0)}</strong>
           </article>
           <article>
             <span>Valor total</span>
@@ -3688,39 +4008,63 @@ function InventoryView({
         </section>
 
         <div className="item-list">
-          {(inventory?.summary.byFloor ?? []).length === 0 && <p className="empty">Aún no hay inventario registrado.</p>}
-          {inventory?.summary.byFloor.map((floor) => (
-            <article className="item-card" key={floor.floorId ?? floor.floorName}>
+          {(inventory?.summary.byPiso ?? []).length === 0 && <p className="empty">Aun no hay inventario registrado.</p>}
+          {inventory?.summary.byPiso.map((piso) => (
+            <article className="item-card" key={piso.piso}>
               <header>
-                <strong>{floor.floorName}</strong>
-                <span>{money.format(floor.totalValue)}</span>
+                <strong>{piso.piso}</strong>
+                <span>{money.format(piso.totalValue)}</span>
               </header>
               <p>
-                {floor.itemCount} registros - {floor.totalQuantity} unidades
+                {piso.itemCount} registros - {formatQuantity(piso.totalQuantity)} unidades
               </p>
             </article>
           ))}
         </div>
       </div>
+      )}
 
+      {mode === 'list' && (
       <div className="panel inventory-table-panel">
         <div className="panel-header-row">
           <h2>Inventario registrado</h2>
-          <label className="compact-filter">
-            Piso
-            <FancySelect
-              value={floorFilter}
-              onChange={(nextValue) => setFloorFilter(nextValue)}
-              options={[{ value: 'ALL', label: 'Todos' }, ...floors.map((floor) => ({ value: floor.id, label: floor.name }))]}
-            />
-          </label>
+          <div className="inventory-filters">
+            <label className="compact-filter">
+              Piso
+              <FancySelect
+                value={pisoFilter}
+                onChange={(nextValue) => setPisoFilter(nextValue)}
+                options={[{ value: 'ALL', label: 'Todos' }, ...pisoOptions]}
+              />
+            </label>
+            <label className="compact-filter">
+              Categoria
+              <FancySelect
+                value={categoryFilter}
+                onChange={(nextValue) => setCategoryFilter(nextValue)}
+                options={[{ value: 'ALL', label: 'Todas' }, ...categories.map((category) => ({ value: category.id, label: category.nombre }))]}
+              />
+            </label>
+          </div>
         </div>
         <div className="inventory-filter-total">
-          Vista actual: {filteredItems.length} registros, {filteredQuantity} unidades,{' '}
+          Vista actual: {filteredItems.length} registros, {formatQuantity(filteredQuantity)} unidades,{' '}
           <strong>{money.format(filteredValue)}</strong>
+        </div>
+        <div className="inventory-category-breakdown">
+          {(inventory?.summary.byCategory ?? []).slice(0, 8).map((category) => (
+            <article key={`${category.piso}-${category.categoria}`}>
+              <span>{category.piso}</span>
+              <strong>{category.categoria}</strong>
+              <small>
+                {category.itemCount} items - {money.format(category.totalValue)}
+              </small>
+            </article>
+          ))}
         </div>
         <InventoryTable items={filteredItems} removeInventoryItem={removeInventoryItem} />
       </div>
+      )}
     </section>
   )
 }
@@ -3744,11 +4088,12 @@ function InventoryTable({
             <tr>
               <th>Artículo</th>
               <th>Piso</th>
-              <th>Ubicación</th>
+              <th>Categoria</th>
               <th>Cantidad</th>
-              <th>Costo unit.</th>
+              <th>Valor unit.</th>
               <th>Total</th>
               <th>Estado</th>
+              <th>Ubicacion</th>
               <th>Acciones</th>
             </tr>
           </thead>
@@ -3756,28 +4101,27 @@ function InventoryTable({
             {items.map((item) => (
               <tr key={item.id}>
                 <td>
-                  <strong>{item.name}</strong>
+                  <strong>{item.nombre}</strong>
                   <br />
-                  <small>{item.category || 'Sin categoria'}</small>
+                  <small>{item.descripcion || item.observacion || 'Sin descripcion'}</small>
                 </td>
-                <td>{item.floorName}</td>
-                <td>{item.specificLocation || '-'}</td>
+                <td>{item.piso}</td>
                 <td>
-                  {item.quantity}
-                  {item.quantity <= item.minimumQuantity && item.minimumQuantity > 0 && (
-                    <>
-                      <br />
-                      <small className="warning-text">Revisar stock</small>
-                    </>
-                  )}
+                  <strong>{item.categoria}</strong>
+                  <br />
+                  <small>{item.subcategoria}</small>
                 </td>
-                <td>{money.format(item.unitCost)}</td>
-                <td>{money.format(item.totalCost)}</td>
                 <td>
-                  <span className={`status inventory ${item.conditionStatus}`}>
-                    {inventoryConditionLabels[item.conditionStatus]}
+                  {formatQuantity(item.cantidad)} {item.unidadMedida}
+                </td>
+                <td>{money.format(item.valorUnitario)}</td>
+                <td>{money.format(item.valorTotal)}</td>
+                <td>
+                  <span className={`status inventory ${inventoryStatusClass(item.estado)}`}>
+                    {inventoryStatusLabels[item.estado]}
                   </span>
                 </td>
+                <td>{item.ubicacion || '-'}</td>
                 <td className="actions-cell">
                   <button
                     className="btn icon danger"
@@ -3799,32 +4143,36 @@ function InventoryTable({
           <article className="mobile-event-card" key={item.id}>
             <header>
               <div>
-                <strong>{item.name}</strong>
-                <span>{item.category || 'Sin categoria'}</span>
+                <strong>{item.nombre}</strong>
+                <span>
+                  {item.categoria} / {item.subcategoria}
+                </span>
               </div>
-              <span className={`status inventory ${item.conditionStatus}`}>
-                {inventoryConditionLabels[item.conditionStatus]}
+              <span className={`status inventory ${inventoryStatusClass(item.estado)}`}>
+                {inventoryStatusLabels[item.estado]}
               </span>
             </header>
             <dl>
               <div>
                 <dt>Piso</dt>
-                <dd>{item.floorName}</dd>
+                <dd>{item.piso}</dd>
               </div>
               <div>
                 <dt>Cantidad</dt>
-                <dd>{item.quantity}</dd>
+                <dd>
+                  {formatQuantity(item.cantidad)} {item.unidadMedida}
+                </dd>
               </div>
               <div>
-                <dt>Costo unit.</dt>
-                <dd>{money.format(item.unitCost)}</dd>
+                <dt>Valor unit.</dt>
+                <dd>{money.format(item.valorUnitario)}</dd>
               </div>
               <div>
                 <dt>Total</dt>
-                <dd>{money.format(item.totalCost)}</dd>
+                <dd>{money.format(item.valorTotal)}</dd>
               </div>
             </dl>
-            <p>{item.specificLocation || 'Sin ubicación específica'}</p>
+            <p>{item.ubicacion || item.observacion || 'Sin ubicacion registrada'}</p>
             <div className="mobile-card-actions">
               <button
                 className="btn icon danger"

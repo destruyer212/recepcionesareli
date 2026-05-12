@@ -14,9 +14,22 @@ import type {
   InventoryDashboard,
   InventoryPayload,
   InventoryItem,
+  WorkerContact,
+  WorkerPayload,
 } from './types'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8083/api'
+function stripTrailingSlash(s: string): string {
+  return s.endsWith('/') ? s.slice(0, -1) : s
+}
+
+/** Base del API (/api/dashboard, …). Producción habitual: mismo dominio/Nginx proxy → `/api`. */
+function resolveApiBaseUrl(): string {
+  const raw = import.meta.env.VITE_API_BASE_URL?.trim()
+  if (raw) return stripTrailingSlash(raw)
+  return '/api'
+}
+
+const API_BASE_URL = resolveApiBaseUrl()
 
 function cleanEventPayload(payload: EventPayload): EventPayload {
   return {
@@ -85,6 +98,10 @@ export const api = {
   createInventoryItem: (payload: InventoryPayload) =>
     request<InventoryItem>('/inventory', { method: 'POST', body: JSON.stringify(payload) }),
   deleteInventoryItem: (id: string) => request<void>(`/inventory/${id}`, { method: 'DELETE' }),
+  workers: () => request<WorkerContact[]>('/workers'),
+  createWorker: (payload: WorkerPayload) =>
+    request<WorkerContact>('/workers', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteWorker: (id: string) => request<void>(`/workers/${id}`, { method: 'DELETE' }),
   packages: () => request<EventPackage[]>('/packages'),
   events: () => request<EventItem[]>('/events'),
   contractPreview: (eventId: string) => request<ContractPreview>(`/events/${eventId}/contract-preview`),

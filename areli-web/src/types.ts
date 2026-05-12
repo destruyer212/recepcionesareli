@@ -14,7 +14,23 @@ export type DocumentType = 'DNI' | 'RUC'
 
 export type ApdaycPayer = 'CLIENT' | 'ARELI' | 'SHARED'
 export type ApdaycStatus = 'PENDING' | 'INCLUDED' | 'PAID' | 'NOT_APPLIES'
-export type InventoryCondition = 'GOOD' | 'REGULAR' | 'DAMAGED' | 'LOST' | 'IN_REPAIR'
+export type InventoryStatus = 'Disponible' | 'En uso' | 'Mantenimiento' | 'Dañado' | 'Perdido' | 'Retirado'
+export type WorkerCategory =
+  | 'EVENT_PLANNER'
+  | 'COORDINADOR_EVENTO'
+  | 'DJ'
+  | 'FOTOGRAFO'
+  | 'VIDEOGRAFO'
+  | 'SEGURIDAD'
+  | 'ANFITRIONA'
+  | `MOZO_${number}`
+  | 'BARMAN'
+  | 'HORA_LOCA'
+  | 'DECORACION'
+  | 'BOCADITOS'
+  | 'COCINA'
+  | 'LIMPIEZA'
+  | 'APOYO'
 
 export type Client = {
   id: string
@@ -133,50 +149,86 @@ export type DashboardSummary = {
 
 export type InventoryItem = {
   id: string
-  floorId?: string
-  floorName: string
-  name: string
-  category?: string
-  quantity: number
-  unitCost: number
-  totalCost: number
-  specificLocation?: string
-  minimumQuantity: number
-  conditionStatus: InventoryCondition
-  purchaseDate?: string
-  notes?: string
+  piso: string
+  categoriaId: string
+  categoria: string
+  subcategoriaId: string
+  subcategoria: string
+  nombre: string
+  descripcion?: string
+  cantidad: number
+  unidadMedida: string
+  valorUnitario: number
+  valorTotal: number
+  estado: InventoryStatus
+  ubicacion?: string
+  observacion?: string
 }
 
-export type InventoryFloorSummary = {
-  floorId?: string
-  floorName: string
+export type InventorySubcategory = {
+  id: string
+  nombre: string
+  descripcion?: string
+}
+
+export type InventoryCategory = {
+  id: string
+  nombre: string
+  descripcion?: string
+  subcategorias: InventorySubcategory[]
+}
+
+export type InventoryPisoSummary = {
+  piso: string
   itemCount: number
   totalQuantity: number
   totalValue: number
+}
+
+export type InventoryCategorySummary = InventoryPisoSummary & {
+  categoria: string
 }
 
 export type InventorySummary = {
   itemCount: number
   totalQuantity: number
   totalValue: number
-  byFloor: InventoryFloorSummary[]
+  byPiso: InventoryPisoSummary[]
+  byCategory: InventoryCategorySummary[]
 }
 
 export type InventoryDashboard = {
+  categories: InventoryCategory[]
   items: InventoryItem[]
   summary: InventorySummary
 }
 
 export type InventoryPayload = {
-  floorId?: string
+  piso: string
+  categoriaId: string
+  subcategoriaId: string
+  nombre: string
+  descripcion?: string
+  cantidad: number
+  unidadMedida: string
+  valorTotal: number
+  estado: InventoryStatus
+  ubicacion?: string
+  observacion?: string
+}
+
+export type WorkerContact = {
+  id: string
+  category: WorkerCategory
   name: string
-  category?: string
-  quantity: number
-  unitCost: number
-  specificLocation?: string
-  minimumQuantity: number
-  conditionStatus: InventoryCondition
-  purchaseDate?: string
+  phone?: string
+  notes?: string
+}
+
+export type WorkerPayload = {
+  category: WorkerCategory
+  name: string
+  phone?: string
   notes?: string
 }
 

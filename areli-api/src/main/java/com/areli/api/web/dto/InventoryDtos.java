@@ -1,14 +1,13 @@
 package com.areli.api.web.dto;
 
-import com.areli.api.domain.Enums.InventoryCondition;
-import com.areli.api.domain.Floor;
+import com.areli.api.domain.PaymentAndOperations.InventoryCategory;
 import com.areli.api.domain.PaymentAndOperations.InventoryItem;
+import com.areli.api.domain.PaymentAndOperations.InventorySubcategory;
 import jakarta.validation.constraints.DecimalMin;
-import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import java.math.BigDecimal;
-import java.time.LocalDate;
+import java.math.RoundingMode;
 import java.util.List;
 import java.util.UUID;
 
@@ -17,89 +16,126 @@ public final class InventoryDtos {
     }
 
     public record InventoryItemRequest(
-            UUID floorId,
-            @NotBlank String name,
-            String category,
-            @NotNull @Min(0) Integer quantity,
-            @NotNull @DecimalMin("0.00") BigDecimal unitCost,
-            String specificLocation,
-            @Min(0) Integer minimumQuantity,
-            InventoryCondition conditionStatus,
-            LocalDate purchaseDate,
-            String notes
+            @NotBlank String piso,
+            @NotNull UUID categoriaId,
+            @NotNull UUID subcategoriaId,
+            @NotBlank String nombre,
+            String descripcion,
+            @NotNull @DecimalMin("0.01") BigDecimal cantidad,
+            @NotBlank String unidadMedida,
+            @NotNull @DecimalMin("0.00") BigDecimal valorTotal,
+            String estado,
+            String ubicacion,
+            String observacion
     ) {
-        public InventoryItem toEntity(Floor floor) {
-            InventoryItem item = new InventoryItem();
-            item.setFloor(floor);
-            item.setName(name);
-            item.setCategory(category);
-            item.setQuantity(quantity == null ? 0 : quantity);
-            item.setUnitCost(unitCost == null ? BigDecimal.ZERO : unitCost);
-            item.setSpecificLocation(specificLocation);
-            item.setLocation(floor == null ? null : floor.getName());
-            item.setMinimumQuantity(minimumQuantity == null ? 0 : minimumQuantity);
-            item.setConditionStatus(conditionStatus == null ? InventoryCondition.GOOD : conditionStatus);
-            item.setPurchaseDate(purchaseDate);
-            item.setNotes(notes);
-            item.setActive(true);
-            return item;
+    }
+
+    public record InventorySubcategoryResponse(
+            UUID id,
+            String nombre,
+            String descripcion
+    ) {
+        public static InventorySubcategoryResponse from(InventorySubcategory subcategory) {
+            return new InventorySubcategoryResponse(
+                    subcategory.getId(),
+                    subcategory.getNombre(),
+                    subcategory.getDescripcion());
+        }
+    }
+
+    public record InventoryCategoryResponse(
+            UUID id,
+            String nombre,
+            String descripcion,
+            List<InventorySubcategoryResponse> subcategorias
+    ) {
+        public static InventoryCategoryResponse from(
+                InventoryCategory category,
+                List<InventorySubcategoryResponse> subcategories) {
+            return new InventoryCategoryResponse(
+                    category.getId(),
+                    category.getNombre(),
+                    category.getDescripcion(),
+                    subcategories);
         }
     }
 
     public record InventoryItemResponse(
             UUID id,
-            UUID floorId,
-            String floorName,
-            String name,
-            String category,
-            Integer quantity,
-            BigDecimal unitCost,
-            BigDecimal totalCost,
-            String specificLocation,
-            Integer minimumQuantity,
-            InventoryCondition conditionStatus,
-            LocalDate purchaseDate,
-            String notes
+            String piso,
+            UUID categoriaId,
+            String categoria,
+            UUID subcategoriaId,
+            String subcategoria,
+            String nombre,
+            String descripcion,
+            BigDecimal cantidad,
+            String unidadMedida,
+            BigDecimal valorUnitario,
+            BigDecimal valorTotal,
+            String estado,
+            String ubicacion,
+            String observacion
     ) {
         public static InventoryItemResponse from(InventoryItem item) {
-            BigDecimal unitCost = item.getUnitCost() == null ? BigDecimal.ZERO : item.getUnitCost();
-            Integer quantity = item.getQuantity() == null ? 0 : item.getQuantity();
-            Floor floor = item.getFloor();
+            InventoryCategory category = item.getCategoria();
+            InventorySubcategory subcategory = item.getSubcategoria();
+            BigDecimal cantidad = valueOrZero(item.getCantidad());
+            BigDecimal valorTotal = valueOrZero(item.getValorTotal());
+            BigDecimal valorUnitario = cantidad.compareTo(BigDecimal.ZERO) > 0
+                    ? valorTotal.divide(cantidad, 2, RoundingMode.HALF_UP)
+                    : BigDecimal.ZERO;
             return new InventoryItemResponse(
                     item.getId(),
-                    floor == null ? null : floor.getId(),
-                    floor == null ? "Sin ambiente" : floor.getName(),
-                    item.getName(),
-                    item.getCategory(),
-                    quantity,
-                    unitCost,
-                    unitCost.multiply(BigDecimal.valueOf(quantity)),
-                    item.getSpecificLocation(),
-                    item.getMinimumQuantity(),
-                    item.getConditionStatus(),
-                    item.getPurchaseDate(),
-                    item.getNotes());
+                    item.getPiso(),
+                    category == null ? null : category.getId(),
+                    category == null ? "Sin categoria" : category.getNombre(),
+                    subcategory == null ? null : subcategory.getId(),
+                    subcategory == null ? "Sin subcategoria" : subcategory.getNombre(),
+                    item.getNombre(),
+                    item.getDescripcion(),
+                    cantidad,
+                    item.getUnidadMedida(),
+                    valueOrZero(valorUnitario),
+                    valorTotal,
+                    item.getEstado(),
+                    item.getUbicacion(),
+                    item.getObservacion());
+        }
+
+        private static BigDecimal valueOrZero(BigDecimal value) {
+            return value == null ? BigDecimal.ZERO : value;
         }
     }
 
-    public record InventoryFloorSummary(
-            UUID floorId,
-            String floorName,
+    public record InventoryPisoSummary(
+            String piso,
             long itemCount,
-            long totalQuantity,
+            BigDecimal totalQuantity,
+            BigDecimal totalValue
+    ) {
+    }
+
+    public record InventoryCategorySummary(
+            String piso,
+            String categoria,
+            long itemCount,
+            BigDecimal totalQuantity,
             BigDecimal totalValue
     ) {
     }
 
     public record InventorySummary(
             long itemCount,
-            long totalQuantity,
+            BigDecimal totalQuantity,
             BigDecimal totalValue,
-            List<InventoryFloorSummary> byFloor
+            List<InventoryPisoSummary> byPiso,
+            List<InventoryCategorySummary> byCategory
     ) {
     }
 
     public record InventoryDashboardResponse(
+            List<InventoryCategoryResponse> categories,
             List<InventoryItemResponse> items,
             InventorySummary summary
     ) {
