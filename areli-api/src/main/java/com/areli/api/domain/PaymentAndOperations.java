@@ -140,7 +140,7 @@ public final class PaymentAndOperations {
         }
     }
 
-    @Entity
+    @Entity(name = "EventStaffAssignment")
     @Table(name = "event_staff_assignments")
     public static class EventStaffAssignment extends BaseEntity {
         @ManyToOne(fetch = FetchType.LAZY)
@@ -151,6 +151,12 @@ public final class PaymentAndOperations {
         private StaffMember staffMember;
         @Column(nullable = false)
         private String role;
+        @Column(name = "role_key", nullable = false)
+        private String roleKey;
+        @Column(name = "role_label", nullable = false)
+        private String roleLabel;
+        @Column(name = "slot_number")
+        private Integer slotNumber;
         @Column(nullable = false)
         private BigDecimal agreedPayment = BigDecimal.ZERO;
         @Column(nullable = false)
@@ -158,8 +164,98 @@ public final class PaymentAndOperations {
         @Enumerated(EnumType.STRING)
         @Column(nullable = false)
         private StaffPaymentStatus paymentStatus = StaffPaymentStatus.PENDING;
+        @Column(nullable = false)
+        private boolean active = true;
         @Column(columnDefinition = "text")
         private String notes;
+
+        public Event getEvent() {
+            return event;
+        }
+
+        public void setEvent(Event event) {
+            this.event = event;
+        }
+
+        public StaffMember getStaffMember() {
+            return staffMember;
+        }
+
+        public void setStaffMember(StaffMember staffMember) {
+            this.staffMember = staffMember;
+        }
+
+        public String getRole() {
+            return role;
+        }
+
+        public void setRole(String role) {
+            this.role = role;
+        }
+
+        public String getRoleKey() {
+            return roleKey;
+        }
+
+        public void setRoleKey(String roleKey) {
+            this.roleKey = roleKey;
+        }
+
+        public String getRoleLabel() {
+            return roleLabel;
+        }
+
+        public void setRoleLabel(String roleLabel) {
+            this.roleLabel = roleLabel;
+        }
+
+        public Integer getSlotNumber() {
+            return slotNumber;
+        }
+
+        public void setSlotNumber(Integer slotNumber) {
+            this.slotNumber = slotNumber;
+        }
+
+        public BigDecimal getAgreedPayment() {
+            return agreedPayment;
+        }
+
+        public void setAgreedPayment(BigDecimal agreedPayment) {
+            this.agreedPayment = agreedPayment;
+        }
+
+        public BigDecimal getPaidAmount() {
+            return paidAmount;
+        }
+
+        public void setPaidAmount(BigDecimal paidAmount) {
+            this.paidAmount = paidAmount;
+        }
+
+        public StaffPaymentStatus getPaymentStatus() {
+            return paymentStatus;
+        }
+
+        public void setPaymentStatus(StaffPaymentStatus paymentStatus) {
+            this.paymentStatus = paymentStatus;
+        }
+
+        public boolean isActive() {
+            return active;
+        }
+
+        public void setActive(boolean active) {
+            this.active = active;
+        }
+
+        public String getNotes() {
+            return notes;
+        }
+
+        public void setNotes(String notes) {
+            this.notes = notes;
+        }
     }
 
     @Entity

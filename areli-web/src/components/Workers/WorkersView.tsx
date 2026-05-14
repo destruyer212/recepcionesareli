@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { ClipboardList, Phone, Save, Search, Trash2, Users } from 'lucide-react'
+import { Check, ChevronDown, ClipboardList, Phone, Save, Search, Trash2, Users } from 'lucide-react'
 import { api } from '../../api'
 import type { WorkerCategory, WorkerContact } from '../../types'
 
@@ -9,6 +9,12 @@ type WorkerRoleMode = FixedWorkerRole | 'MOZOS'
 
 type WorkerRoleConfig = {
   id: FixedWorkerRole
+  label: string
+  hint: string
+}
+
+type WorkerRoleOption = {
+  id: WorkerRoleMode
   label: string
   hint: string
 }
@@ -28,6 +34,12 @@ const workerRoles: WorkerRoleConfig[] = [
   { id: 'COCINA', label: 'Personal de Cocina', hint: 'Preparación, apoyo y salida de platos.' },
   { id: 'LIMPIEZA', label: 'Personal de Limpieza', hint: 'Orden antes, durante y cierre.' },
   { id: 'APOYO', label: 'Personal de Apoyo', hint: 'Refuerzos para tareas generales.' },
+]
+
+const workerRoleOptions: WorkerRoleOption[] = [
+  ...workerRoles.slice(0, 7),
+  { id: 'MOZOS', label: 'Mozos', hint: 'Sub lista numerada para Mozo 1, Mozo 2, Mozo 3 y los que necesites.' },
+  ...workerRoles.slice(7),
 ]
 
 const legacyWorkerLabels: Record<string, string> = {
@@ -51,6 +63,10 @@ function labelForCategory(category: string) {
   return workerRoles.find((role) => role.id === category)?.label ?? legacyWorkerLabels[category] ?? category
 }
 
+function roleOptionFor(value: WorkerRoleMode) {
+  return workerRoleOptions.find((role) => role.id === value) ?? workerRoleOptions[0]
+}
+
 function nextMozoNumber(directory: WorkerContact[]) {
   const used = new Set(directory.map((item) => String(item.category)).filter(isMozoCategory).map(mozoNumber))
   for (let index = 1; index <= used.size + 1; index++) {
@@ -66,6 +82,83 @@ function matchesSearch(item: WorkerContact, query: string) {
     .join(' ')
     .toLowerCase()
     .includes(needle)
+}
+
+function WorkerRolePicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: WorkerRoleMode
+  onChange: (value: WorkerRoleMode) => void
+  disabled?: boolean
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+  const wrapperRef = useRef<HTMLDivElement | null>(null)
+  const selected = roleOptionFor(value)
+
+  useEffect(() => {
+    function closeOnOutside(event: MouseEvent | TouchEvent) {
+      const target = event.target as Node | null
+      if (!target || wrapperRef.current?.contains(target)) return
+      setIsOpen(false)
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setIsOpen(false)
+    }
+    window.addEventListener('mousedown', closeOnOutside)
+    window.addEventListener('touchstart', closeOnOutside, { passive: true })
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('mousedown', closeOnOutside)
+      window.removeEventListener('touchstart', closeOnOutside)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [])
+
+  return (
+    <div className={`worker-role-picker ${isOpen ? 'open' : ''}`} ref={wrapperRef}>
+      <button
+        aria-expanded={isOpen}
+        className="worker-role-picker-trigger"
+        disabled={disabled}
+        onClick={() => setIsOpen((current) => !current)}
+        type="button"
+      >
+        <span>
+          <strong>{selected.label}</strong>
+          <small>{selected.hint}</small>
+        </span>
+        <ChevronDown size={18} />
+      </button>
+      {isOpen && (
+        <div className="worker-role-picker-menu" role="listbox">
+          {workerRoleOptions.map((role) => {
+            const active = role.id === value
+            return (
+              <button
+                aria-selected={active}
+                className={`worker-role-picker-option ${active ? 'active' : ''}`}
+                key={role.id}
+                onClick={() => {
+                  onChange(role.id)
+                  setIsOpen(false)
+                }}
+                role="option"
+                type="button"
+              >
+                <span>
+                  <strong>{role.label}</strong>
+                  <small>{role.hint}</small>
+                </span>
+                {active && <Check size={16} />}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function WorkersView({ mode = 'registered' }: { mode?: 'registered' | 'create' }) {
@@ -265,24 +358,12 @@ export function WorkersView({ mode = 'registered' }: { mode?: 'registered' | 'cr
 
         <form onSubmit={addWorker}>
           <div className="form-grid">
-            <label className="full">
+            <label className="full worker-role-picker-label">
               Puesto oficial
-              <select value={roleMode} onChange={(event) => selectRole(event.target.value as WorkerRoleMode)}>
-                {workerRoles.slice(0, 7).map((role) => (
-                  <option key={role.id} value={role.id}>
-                    {role.label}
-                  </option>
-                ))}
-                <option value="MOZOS">Mozos</option>
-                {workerRoles.slice(7).map((role) => (
-                  <option key={role.id} value={role.id}>
-                    {role.label}
-                  </option>
-                ))}
-              </select>
+              <WorkerRolePicker disabled={busy} value={roleMode} onChange={selectRole} />
             </label>
             {roleMode === 'MOZOS' && (
-              <label>
+              <label className="worker-mozo-slot-label">
                 Sub puesto
                 <select value={mozoSlot} onChange={(event) => setMozoSlot(Number(event.target.value))}>
                   {mozoSlotOptions.map((slot) => (

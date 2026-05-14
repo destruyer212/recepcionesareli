@@ -37,13 +37,14 @@ import { api } from './api'
 import { downloadEventContractPdf } from './pdf'
 import { WorkersView } from './components/Workers/WorkersView'
 import type {
-  AiResponse,
   Client,
   ClientPayload,
   ContractPreview,
   DashboardSummary,
   ApdaycPayer,
   ApdaycStatus,
+  EventStaffAssignment,
+  EventStaffRoleKey,
   EventItem,
   EventPackage,
   EventPayload,
@@ -55,6 +56,7 @@ import type {
   InventoryPayload,
   InventoryStatus,
   RescheduleOptions,
+  StaffAvailability,
   AppSettings,
 } from './types'
 import 'react-datepicker/dist/react-datepicker.css'
@@ -76,7 +78,9 @@ type View =
   | 'workersCreate'
   | 'ai'
   | 'settings'
-type AiMode = 'contract' | 'summary' | 'marketing' | 'balance'
+type NavIcon = typeof LayoutDashboard
+type NavItem = { id: View; label: string; shortLabel?: string; icon: NavIcon }
+type NavSection = { title: string; items: NavItem[] }
 type EventSortMode = 'recent' | 'upcoming'
 const VIEW_STORAGE_KEY = 'areli-active-view'
 const MANUAL_LOOKUP_FALLBACK_MESSAGE =
@@ -218,34 +222,37 @@ function clientOptionLabel(client: Client) {
   return `${client.fullName}${client.documentNumber ? ` - ${client.documentNumber}` : ''}`
 }
 
-function getVisualViewportSafeBand() {
+function getVisualViewportMetrics() {
   const vv = window.visualViewport
-  const marginTop = 28
-  const marginBottom = 28
   if (!vv) {
     return {
-      safeTop: marginTop,
-      safeBottom: window.innerHeight - marginBottom,
+      height: window.innerHeight,
+      offsetTop: 0,
+      keyboardOffset: 0,
     }
   }
+  const keyboardOffset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
   return {
-    safeTop: vv.offsetTop + marginTop,
-    safeBottom: vv.offsetTop + vv.height - marginBottom,
+    height: vv.height,
+    offsetTop: vv.offsetTop,
+    keyboardOffset,
   }
 }
 
 /** Scroll explícito del body del modal: iOS no respeta bien scrollIntoView con ancestros overflow-hidden. */
 function scrollFocusedIntoModalBody(scrollBody: HTMLElement, focused: HTMLElement) {
   if (!scrollBody.contains(focused)) return
-  const { safeTop, safeBottom } = getVisualViewportSafeBand()
-  for (let pass = 0; pass < 8; pass++) {
-    const rect = focused.getBoundingClientRect()
-    let delta = 0
-    if (rect.bottom > safeBottom) delta += rect.bottom - safeBottom
-    if (rect.top < safeTop) delta -= safeTop - rect.top
-    if (Math.abs(delta) < 0.5) break
-    scrollBody.scrollTop += delta
-  }
+  const bodyRect = scrollBody.getBoundingClientRect()
+  const closestLabel = focused.closest('label')
+  const field = closestLabel instanceof HTMLElement ? closestLabel : focused
+  const fieldRect = field.getBoundingClientRect()
+  const safeTop = bodyRect.top + 14
+  const safeBottom = bodyRect.bottom - 22
+  if (fieldRect.top >= safeTop && fieldRect.bottom <= safeBottom) return
+
+  const centeredOffset = (bodyRect.height - fieldRect.height) / 2
+  const nextScrollTop = scrollBody.scrollTop + fieldRect.top - bodyRect.top - Math.max(18, centeredOffset)
+  scrollBody.scrollTo({ top: Math.max(0, nextScrollTop), behavior: 'auto' })
 }
 
 function useMobileModalBehavior(isOpen: boolean) {
@@ -254,6 +261,7 @@ function useMobileModalBehavior(isOpen: boolean) {
   const lastFocusedElementRef = useRef<HTMLElement | null>(null)
   const scrollTimerRef = useRef<number | null>(null)
   const followUpTimerRef = useRef<number | null>(null)
+  const scrollTimersRef = useRef<number[]>([])
   const lastViewportHeightRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -278,17 +286,15 @@ function useMobileModalBehavior(isOpen: boolean) {
       lastFocusedElementRef.current = element
       if (scrollTimerRef.current != null) window.clearTimeout(scrollTimerRef.current)
       if (followUpTimerRef.current != null) window.clearTimeout(followUpTimerRef.current)
-
-      scrollTimerRef.current = window.setTimeout(() => {
-        window.requestAnimationFrame(() => {
-          runScrollIntoBody()
-          window.requestAnimationFrame(runScrollIntoBody)
-        })
-      }, delayMs)
-
-      followUpTimerRef.current = window.setTimeout(() => {
-        window.requestAnimationFrame(runScrollIntoBody)
-      }, delayMs + 220)
+      scrollTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+      scrollTimersRef.current = [delayMs, delayMs + 120, delayMs + 260, delayMs + 480].map((delay) =>
+        window.setTimeout(() => {
+          window.requestAnimationFrame(() => {
+            runScrollIntoBody()
+            window.requestAnimationFrame(runScrollIntoBody)
+          })
+        }, delay),
+      )
     }
 
     function bringFocusedFieldIntoView(event: FocusEvent) {
@@ -298,19 +304,27 @@ function useMobileModalBehavior(isOpen: boolean) {
       const isNativeField = target.matches('input, textarea, select, [contenteditable="true"]')
       const isFancySelectTrigger = target.matches('button.fancy-select-trigger')
       if (!isNativeField && !isFancySelectTrigger) return
-      // Esperar a que el teclado termine de animar (iPhone Safari).
-      scheduleScrollFocused(target, 460)
+      scheduleScrollFocused(target, 90)
+    }
+
+    function keepActiveFieldVisible(event: Event) {
+      const target = event.target as HTMLElement | null
+      if (!target || !modalEl.contains(target)) return
+      const active = document.activeElement
+      if (active instanceof HTMLElement && modalEl.contains(active)) {
+        scheduleScrollFocused(active, 80)
+      }
     }
 
     function handleViewportResize() {
-      const viewport = window.visualViewport
-      const viewportHeight = viewport?.height ?? window.innerHeight
-      const keyboardOffset = viewport ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop) : 0
+      const { height: viewportHeight, offsetTop, keyboardOffset } = getVisualViewportMetrics()
       const innerH = window.innerHeight
-      const keyboardLikely = innerH - viewportHeight > 110 || (viewport != null && viewport.offsetTop > 48)
+      const keyboardLikely = innerH - viewportHeight > 110 || offsetTop > 48
 
       document.documentElement.style.setProperty('--app-viewport-height', `${viewportHeight}px`)
+      document.documentElement.style.setProperty('--app-viewport-offset-top', `${offsetTop}px`)
       modalEl.style.setProperty('--vvh', `${viewportHeight}px`)
+      modalEl.style.setProperty('--vv-offset-top', `${offsetTop}px`)
       modalEl.style.setProperty('--kb-offset', `${keyboardOffset}px`)
       modalEl.setAttribute('data-keyboard-open', keyboardLikely ? 'true' : 'false')
 
@@ -328,13 +342,37 @@ function useMobileModalBehavior(isOpen: boolean) {
       }
     }
 
+    function preventBackgroundTouch(event: TouchEvent) {
+      const scrollBody = getScrollBody()
+      const target = event.target as Node | null
+      if (scrollBody && target && scrollBody.contains(target)) return
+      event.preventDefault()
+    }
+
+    const scrollY = window.scrollY
     const previousBodyOverflow = document.body.style.overflow
     const previousBodyOverscroll = document.body.style.overscrollBehaviorY
+    const previousBodyPosition = document.body.style.position
+    const previousBodyTop = document.body.style.top
+    const previousBodyLeft = document.body.style.left
+    const previousBodyRight = document.body.style.right
+    const previousBodyWidth = document.body.style.width
+    const previousHtmlOverflow = document.documentElement.style.overflow
     const previousHtmlOverscroll = document.documentElement.style.overscrollBehaviorY
+    document.documentElement.classList.add('modal-scroll-locked')
     document.body.style.overflow = 'hidden'
     document.body.style.overscrollBehaviorY = 'none'
+    document.body.style.position = 'fixed'
+    document.body.style.top = `-${scrollY}px`
+    document.body.style.left = '0'
+    document.body.style.right = '0'
+    document.body.style.width = '100%'
+    document.documentElement.style.overflow = 'hidden'
     document.documentElement.style.overscrollBehaviorY = 'none'
     modalEl.addEventListener('focusin', bringFocusedFieldIntoView)
+    modalEl.addEventListener('input', keepActiveFieldVisible)
+    modalEl.addEventListener('change', keepActiveFieldVisible)
+    document.addEventListener('touchmove', preventBackgroundTouch, { passive: false })
     window.visualViewport?.addEventListener('resize', handleViewportResize)
     window.visualViewport?.addEventListener('scroll', handleViewportResize)
     window.addEventListener('resize', handleViewportResize)
@@ -342,18 +380,33 @@ function useMobileModalBehavior(isOpen: boolean) {
 
     return () => {
       modalEl.removeEventListener('focusin', bringFocusedFieldIntoView)
+      modalEl.removeEventListener('input', keepActiveFieldVisible)
+      modalEl.removeEventListener('change', keepActiveFieldVisible)
+      document.removeEventListener('touchmove', preventBackgroundTouch)
       window.visualViewport?.removeEventListener('resize', handleViewportResize)
       window.visualViewport?.removeEventListener('scroll', handleViewportResize)
       window.removeEventListener('resize', handleViewportResize)
       if (scrollTimerRef.current != null) window.clearTimeout(scrollTimerRef.current)
       if (followUpTimerRef.current != null) window.clearTimeout(followUpTimerRef.current)
+      scrollTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+      scrollTimersRef.current = []
+      document.documentElement.classList.remove('modal-scroll-locked')
       document.body.style.overflow = previousBodyOverflow
       document.body.style.overscrollBehaviorY = previousBodyOverscroll
+      document.body.style.position = previousBodyPosition
+      document.body.style.top = previousBodyTop
+      document.body.style.left = previousBodyLeft
+      document.body.style.right = previousBodyRight
+      document.body.style.width = previousBodyWidth
+      document.documentElement.style.overflow = previousHtmlOverflow
       document.documentElement.style.overscrollBehaviorY = previousHtmlOverscroll
       document.documentElement.style.removeProperty('--app-viewport-height')
+      document.documentElement.style.removeProperty('--app-viewport-offset-top')
       modalEl.removeAttribute('data-keyboard-open')
       modalEl.style.removeProperty('--kb-offset')
       modalEl.style.removeProperty('--vvh')
+      modalEl.style.removeProperty('--vv-offset-top')
+      window.scrollTo(0, scrollY)
     }
   }, [isOpen])
 
@@ -500,7 +553,7 @@ const emptyEvent: EventPayload = {
 }
 
 const emptyInventoryItem: InventoryPayload = {
-  piso: '1er Piso',
+  piso: '1er piso',
   categoriaId: '',
   subcategoriaId: '',
   nombre: '',
@@ -710,6 +763,31 @@ function floorGroupFromName(floorName: string): Exclude<FloorFilter, 'ALL'> | 'O
   return 'OTHER'
 }
 
+function canonicalInventoryPiso(value?: string | null) {
+  const raw = value?.trim()
+  if (!raw) return ''
+  const normalized = raw
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  if (normalized.includes('1er') || normalized.includes('piso 1') || normalized.includes('primer piso')) {
+    return '1er piso'
+  }
+  if (normalized.includes('2do') || normalized.includes('piso 2') || normalized.includes('segundo piso')) {
+    return '2do piso'
+  }
+  if (
+    normalized.includes('3er') ||
+    normalized.includes('4to') ||
+    normalized.includes('3 y 4') ||
+    normalized.includes('3ro') ||
+    normalized.includes('cuarto piso')
+  ) {
+    return '3er y 4to piso'
+  }
+  return raw
+}
+
 function durationLabel(startTime: string, endTime: string) {
   const [startHour, startMinute] = startTime.split(':').map(Number)
   const [endHour, endMinute] = endTime.split(':').map(Number)
@@ -774,6 +852,49 @@ const eventCancellationTypeLabels: Record<EventCancellationType, string> = {
   FORCE_MAJEURE: 'Fuerza mayor o caso fortuito',
   NO_SHOW: 'Inasistencia (no show)',
   RESCHEDULE_REQUEST_REJECTED: 'Solicitud de reprogramación rechazada',
+}
+
+type EventStaffRoleConfig = {
+  id: EventStaffRoleKey
+  label: string
+  hint: string
+  multi?: boolean
+}
+
+const eventStaffRoles: EventStaffRoleConfig[] = [
+  { id: 'EVENT_PLANNER', label: 'Event Planner', hint: 'Plan general, proveedores y cronograma.' },
+  { id: 'COORDINADOR_EVENTO', label: 'Coordinador del Evento', hint: 'Responsable operativo durante el evento.' },
+  { id: 'DJ', label: 'DJ', hint: 'MÃºsica, cabina y momentos especiales.' },
+  { id: 'FOTOGRAFO', label: 'FotÃ³grafo', hint: 'Registro fotogrÃ¡fico del evento.' },
+  { id: 'VIDEOGRAFO', label: 'VideÃ³grafo', hint: 'Video, reels, tomas y entrega final.' },
+  { id: 'SEGURIDAD', label: 'Seguridad', hint: 'Control de ingreso y orden.' },
+  { id: 'ANFITRIONA', label: 'Anfitriona', hint: 'RecepciÃ³n e indicaciones a invitados.' },
+  { id: 'MOZOS', label: 'Mozos', hint: 'Sub lista numerada: Mozo 1, Mozo 2, Mozo 3 y los que necesites.', multi: true },
+  { id: 'BARMAN', label: 'Barman', hint: 'Bar, bebidas y servicio de cocteles.' },
+  { id: 'HORA_LOCA', label: 'Hora Loca', hint: 'Show, animaciÃ³n y accesorios.' },
+  { id: 'DECORACION', label: 'Personal de DecoraciÃ³n', hint: 'Montaje, estilo y detalles visuales.' },
+  { id: 'BOCADITOS', label: 'Personal de Bocaditos', hint: 'Mesa dulce, salados y atenciÃ³n.' },
+  { id: 'COCINA', label: 'Personal de Cocina', hint: 'PreparaciÃ³n, apoyo y salida de platos.' },
+  { id: 'LIMPIEZA', label: 'Personal de Limpieza', hint: 'Orden antes, durante y cierre.' },
+  { id: 'APOYO', label: 'Personal de Apoyo', hint: 'Refuerzos para tareas generales.' },
+]
+
+function mozoSlotLabel(slot?: number) {
+  return slot && slot > 0 ? `Mozo ${slot}` : 'Mozo'
+}
+
+function eventStaffRoleLabel(roleKey: EventStaffRoleKey, slot?: number) {
+  if (roleKey === 'MOZOS') return mozoSlotLabel(slot)
+  return eventStaffRoles.find((role) => role.id === roleKey)?.label ?? roleKey
+}
+
+function staffAvailabilityLabel(item: StaffAvailability) {
+  const phone = item.staffPhone ? ` - ${item.staffPhone}` : ''
+  if (item.available) return `${item.staffName}${phone}`
+  const conflict = item.conflictEventTitle
+    ? ` (${item.conflictEventTitle}, ${item.conflictEventDate ?? ''} ${shortTime(item.conflictStartTime ?? '')}-${shortTime(item.conflictEndTime ?? '')})`
+    : ''
+  return `${item.staffName}${phone} - ${item.reason ?? 'No disponible'}${conflict}`
 }
 
 const inventoryStatusLabels: Record<InventoryStatus, string> = {
@@ -903,7 +1024,7 @@ function App() {
           }))
           setInventoryForm((current) => ({
             ...current,
-            piso: current.piso || floorList[0]?.name || '1er Piso',
+            piso: canonicalInventoryPiso(current.piso || floorList[0]?.name || '1er piso'),
             categoriaId: current.categoriaId || firstInventoryCategory?.id || '',
             subcategoriaId: current.subcategoriaId || firstInventorySubcategory?.id || '',
           }))
@@ -1068,6 +1189,7 @@ function App() {
     try {
       await api.createInventoryItem({
         ...inventoryForm,
+        piso: canonicalInventoryPiso(inventoryForm.piso),
         descripcion: inventoryForm.descripcion || undefined,
         cantidad: Number(inventoryForm.cantidad),
         valorTotal: Number(inventoryForm.valorTotal),
@@ -1076,7 +1198,7 @@ function App() {
       })
       setInventoryForm((current) => ({
         ...emptyInventoryItem,
-        piso: current.piso,
+        piso: canonicalInventoryPiso(current.piso),
         categoriaId: current.categoriaId,
         subcategoriaId: current.subcategoriaId,
       }))
@@ -1224,30 +1346,47 @@ function App() {
     }
   }
 
-  const mainNav: Array<{ id: View; label: string; icon: typeof LayoutDashboard }> = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'events', label: 'Crear evento', icon: CalendarDays },
-    { id: 'eventsRegistered', label: 'Eventos registrados', icon: ClipboardList },
-    { id: 'clientsCreate', label: 'Registrar cliente', icon: Users },
-    { id: 'clientsRegistered', label: 'Clientes registrados', icon: Users },
-    { id: 'packages', label: 'Paquetes', icon: Package },
-    { id: 'floors', label: 'Ambientes', icon: Building2 },
-    { id: 'inventory', label: 'Inventario', icon: ClipboardList },
-    { id: 'inventoryCreate', label: 'Registrar articulos', icon: Plus },
-    { id: 'workers', label: 'Trabajadores registrados', icon: Users },
-    { id: 'workersCreate', label: 'Registrar trabajador', icon: Plus },
-    { id: 'ai', label: 'IA', icon: Bot },
+  const navSections: NavSection[] = [
+    {
+      title: 'Operación',
+      items: [
+        { id: 'dashboard', label: 'Dashboard', shortLabel: 'Inicio', icon: LayoutDashboard },
+        { id: 'events', label: 'Crear evento', shortLabel: 'Crear', icon: CalendarDays },
+        { id: 'eventsRegistered', label: 'Eventos registrados', shortLabel: 'Eventos', icon: ClipboardList },
+      ],
+    },
+    {
+      title: 'Clientes',
+      items: [
+        { id: 'clientsCreate', label: 'Registrar cliente', shortLabel: 'Reg. cliente', icon: Users },
+        { id: 'clientsRegistered', label: 'Clientes registrados', shortLabel: 'Clientes', icon: Users },
+      ],
+    },
+    {
+      title: 'Catálogo',
+      items: [
+        { id: 'packages', label: 'Paquetes', shortLabel: 'Paquetes', icon: Package },
+        { id: 'floors', label: 'Ambientes', shortLabel: 'Ambientes', icon: Building2 },
+      ],
+    },
+    {
+      title: 'Inventario y equipo',
+      items: [
+        { id: 'inventory', label: 'Inventario', shortLabel: 'Inventario', icon: ClipboardList },
+        { id: 'inventoryCreate', label: 'Registrar artículos', shortLabel: 'Reg. art.', icon: Plus },
+        { id: 'workers', label: 'Trabajadores registrados', shortLabel: 'Equipo', icon: Users },
+        { id: 'workersCreate', label: 'Registrar trabajador', shortLabel: 'Reg. trab.', icon: Plus },
+      ],
+    },
+    {
+      title: 'Sistema',
+      items: [
+        { id: 'ai', label: 'IA', shortLabel: 'IA', icon: Bot },
+        { id: 'settings', label: 'Configuración', shortLabel: 'Config.', icon: Settings },
+      ],
+    },
   ]
-  const mobileCommandNav: Array<{ id: View; label: string; icon: typeof LayoutDashboard }> = [
-    { id: 'dashboard', label: 'Inicio', icon: LayoutDashboard },
-    { id: 'events', label: 'Crear', icon: Plus },
-    { id: 'eventsRegistered', label: 'Eventos', icon: ClipboardList },
-    { id: 'clientsRegistered', label: 'Clientes', icon: Users },
-    { id: 'inventory', label: 'Inventario', icon: Package },
-    { id: 'inventoryCreate', label: 'Registrar', icon: Plus },
-    { id: 'workers', label: 'Equipo', icon: Users },
-    { id: 'ai', label: 'IA', icon: Bot },
-  ]
+  const mobileCommandNav = navSections.flatMap((section) => section.items)
 
   const handleViewChange = (nextView: View) => {
     setView(nextView)
@@ -1268,29 +1407,26 @@ function App() {
         </div>
 
         <nav className="nav" aria-label="Vistas principales">
-          {mainNav.map((item) => {
-            const Icon = item.icon
-            return (
-              <button
-                className={`nav-button ${view === item.id ? 'active' : ''}`}
-                key={item.id}
-                onClick={() => handleViewChange(item.id)}
-                type="button"
-              >
-                <Icon size={18} />
-                {item.label}
-              </button>
-            )
-          })}
-          <div className="nav-divider" role="presentation" />
-          <button
-            className={`nav-button nav-button-settings ${view === 'settings' ? 'active' : ''}`}
-            onClick={() => handleViewChange('settings')}
-            type="button"
-          >
-            <Settings size={18} />
-            Configuración
-          </button>
+          {navSections.map((section) => (
+            <div className="nav-section" key={section.title}>
+              <p className="nav-section-title">{section.title}</p>
+              {section.items.map((item) => {
+                const Icon = item.icon
+                return (
+                  <button
+                    aria-current={view === item.id ? 'page' : undefined}
+                    className={`nav-button ${view === item.id ? 'active' : ''}`}
+                    key={item.id}
+                    onClick={() => handleViewChange(item.id)}
+                    type="button"
+                  >
+                    <Icon size={18} />
+                    <span className="nav-label">{item.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+          ))}
         </nav>
 
         <div className="sidebar-note">
@@ -1335,7 +1471,7 @@ function App() {
                   type="button"
                 >
                   <Icon size={17} />
-                  <span>{item.label}</span>
+                  <span>{item.shortLabel ?? item.label}</span>
                 </button>
               )
             })}
@@ -1566,7 +1702,7 @@ function titleFor(view: View) {
     packages: 'Paquetes comerciales',
     floors: 'Ambientes del local',
     inventory: 'Inventario',
-    inventoryCreate: 'Registrar articulos',
+    inventoryCreate: 'Registrar artículos',
     workers: 'Trabajadores registrados',
     workersCreate: 'Registrar trabajador',
     ai: 'Herramientas inteligentes',
@@ -1675,7 +1811,7 @@ function SettingsView() {
         : 'Sin configurar'
 
   return (
-    <section className="grid">
+    <section className="grid settings-layout">
       <div className="panel settings-panel">
         <h2>Integraciones</h2>
         <p className="settings-intro">
@@ -3012,6 +3148,7 @@ function EventTable({
   const [cancelTarget, setCancelTarget] = useState<EventItem | null>(null)
   const [cancelCancellationType, setCancelCancellationType] = useState<EventCancellationType>('CLIENT_REQUEST')
   const [cancelNotes, setCancelNotes] = useState('')
+  const [staffAssignmentTarget, setStaffAssignmentTarget] = useState<EventItem | null>(null)
   const cancelModal = useMobileModalBehavior(Boolean(cancelTarget))
   const todayKey = dateKey(new Date())
   const visibleEvents = useMemo(() => {
@@ -3295,6 +3432,12 @@ function EventTable({
         </div>
       </div>
     )}
+    {staffAssignmentTarget && (
+      <EventStaffAssignmentModal
+        event={staffAssignmentTarget}
+        onClose={() => setStaffAssignmentTarget(null)}
+      />
+    )}
     <div className="event-table-toolbar">
       <div>
         <span>{sortMode === 'recent' ? 'Últimos eventos creados' : 'Eventos por fecha (no anulados)'}</span>
@@ -3371,6 +3514,14 @@ function EventTable({
               </td>
               <td className="actions-cell event-actions-compact-wrap">
                 <div className="event-actions-buttons">
+                <button
+                  className="btn icon"
+                  onClick={() => setStaffAssignmentTarget(event)}
+                  type="button"
+                >
+                  <Users size={16} />
+                  Asignar equipo
+                </button>
                 <button
                   className="btn icon"
                   onClick={() => onEditRequested?.(event)}
@@ -3457,6 +3608,10 @@ function EventTable({
             <button className="btn icon" onClick={() => onEditRequested?.(event)} type="button">
               Editar
             </button>
+            <button className="btn icon" onClick={() => setStaffAssignmentTarget(event)} type="button">
+              <Users size={16} />
+              Asignar equipo
+            </button>
             <button
               className="btn icon"
               disabled={processingId === event.id || loadingRescheduleId === event.id}
@@ -3488,6 +3643,284 @@ function EventTable({
       ))}
     </div>
     </>
+  )
+}
+
+function EventStaffAssignmentModal({
+  event,
+  onClose,
+}: {
+  event: EventItem
+  onClose: () => void
+}) {
+  const modal = useMobileModalBehavior(true)
+  const [assignments, setAssignments] = useState<EventStaffAssignment[]>([])
+  const [availability, setAvailability] = useState<Partial<Record<EventStaffRoleKey, StaffAvailability[]>>>({})
+  const [selectedStaff, setSelectedStaff] = useState<Partial<Record<EventStaffRoleKey, string>>>({})
+  const [loading, setLoading] = useState(true)
+  const [busyKey, setBusyKey] = useState<string | null>(null)
+  const [notice, setNotice] = useState('')
+  const [error, setError] = useState('')
+  const fixedRoles = eventStaffRoles.filter((role) => !role.multi)
+  const mozosRole = eventStaffRoles.find((role) => role.id === 'MOZOS')!
+  const mozoAssignments = useMemo(
+    () =>
+      assignments
+        .filter((assignment) => assignment.roleKey === 'MOZOS')
+        .sort((a, b) => Number(a.slotNumber ?? 0) - Number(b.slotNumber ?? 0)),
+    [assignments],
+  )
+  const nextMozoSlot = Math.max(0, ...mozoAssignments.map((assignment) => Number(assignment.slotNumber ?? 0))) + 1
+
+  async function loadStaffData(shouldApply: () => boolean = () => true) {
+    setLoading(true)
+    setError('')
+    try {
+      const [assignmentList, availabilityEntries] = await Promise.all([
+        api.eventStaffAssignments(event.id),
+        Promise.all(
+          eventStaffRoles.map(async (role) => {
+            const list = await api.eventStaffAvailability(event.id, role.id)
+            return [role.id, list] as const
+          }),
+        ),
+      ])
+      if (!shouldApply()) return
+      setAssignments(assignmentList)
+      setAvailability(Object.fromEntries(availabilityEntries) as Partial<Record<EventStaffRoleKey, StaffAvailability[]>>)
+    } catch (err) {
+      if (shouldApply()) setError(err instanceof Error ? err.message : 'No se pudo cargar el equipo del evento.')
+    } finally {
+      if (shouldApply()) setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    let active = true
+    void loadStaffData(() => active)
+    return () => {
+      active = false
+    }
+  }, [event.id])
+
+  function selectStaff(roleKey: EventStaffRoleKey, staffMemberId: string) {
+    setSelectedStaff((current) => ({ ...current, [roleKey]: staffMemberId }))
+  }
+
+  async function assignRole(role: EventStaffRoleConfig, slotNumber?: number) {
+    const staffMemberId = selectedStaff[role.id]
+    if (!staffMemberId) {
+      setError('Selecciona un trabajador disponible.')
+      return
+    }
+    const key = `${role.id}-${slotNumber ?? 'principal'}`
+    setBusyKey(key)
+    setError('')
+    setNotice('')
+    try {
+      await api.assignEventStaff(event.id, {
+        staffMemberId,
+        roleKey: role.id,
+        roleLabel: role.label,
+        slotNumber,
+      })
+      setSelectedStaff((current) => ({ ...current, [role.id]: '' }))
+      setNotice(role.id === 'MOZOS' ? `${mozoSlotLabel(slotNumber)} asignado.` : `${role.label} asignado.`)
+      await loadStaffData()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No se pudo asignar el trabajador.')
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
+  async function removeAssignment(assignment: EventStaffAssignment) {
+    const label = assignment.roleKey === 'MOZOS'
+      ? mozoSlotLabel(assignment.slotNumber)
+      : eventStaffRoleLabel(assignment.roleKey, assignment.slotNumber)
+    const confirmed = window.confirm(`Quitar ${label} del evento?`)
+    if (!confirmed) return
+    setBusyKey(`remove-${assignment.id}`)
+    setError('')
+    setNotice('')
+    try {
+      await api.removeEventStaffAssignment(event.id, assignment.id)
+      setNotice(`${label} quitado del evento.`)
+      await loadStaffData()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No se pudo quitar la asignacion.')
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
+  function availabilityFor(roleKey: EventStaffRoleKey) {
+    return availability[roleKey] ?? []
+  }
+
+  function renderAvailabilitySelect(role: EventStaffRoleConfig) {
+    const options = availabilityFor(role.id)
+    const hasAvailable = options.some((item) => item.available)
+    return (
+      <label className="staff-select-label">
+        Trabajador disponible
+        <select
+          disabled={loading || Boolean(busyKey) || !hasAvailable}
+          onChange={(event) => selectStaff(role.id, event.target.value)}
+          value={selectedStaff[role.id] ?? ''}
+        >
+          <option value="">{hasAvailable ? 'Seleccionar trabajador' : 'No hay disponibles'}</option>
+          {options.map((item) => (
+            <option disabled={!item.available} key={item.staffMemberId} value={item.staffMemberId}>
+              {staffAvailabilityLabel(item)}
+            </option>
+          ))}
+        </select>
+      </label>
+    )
+  }
+
+  function renderAssigned(assignment: EventStaffAssignment) {
+    return (
+      <div className="staff-assigned-row" key={assignment.id}>
+        <div>
+          <strong>{assignment.staffName}</strong>
+          <span>
+            {assignment.roleKey === 'MOZOS'
+              ? mozoSlotLabel(assignment.slotNumber)
+              : eventStaffRoleLabel(assignment.roleKey, assignment.slotNumber)}
+            {assignment.staffPhone ? ` - ${assignment.staffPhone}` : ' - Sin telefono'}
+          </span>
+        </div>
+        <button
+          className="btn icon danger"
+          disabled={Boolean(busyKey)}
+          onClick={() => void removeAssignment(assignment)}
+          type="button"
+        >
+          <Trash2 size={14} />
+          Quitar
+        </button>
+      </div>
+    )
+  }
+
+  function renderRoleCard(role: EventStaffRoleConfig) {
+    const assigned = assignments.find((assignment) => assignment.roleKey === role.id)
+    return (
+      <article className="event-staff-role-card" key={role.id}>
+        <header>
+          <div>
+            <h4>{role.label}</h4>
+            <p>{role.hint}</p>
+          </div>
+          <span>{assigned ? '1' : '0'}</span>
+        </header>
+        {assigned ? renderAssigned(assigned) : <p className="empty compact">Sin contacto asignado.</p>}
+        <div className="event-staff-assign-line">
+          {renderAvailabilitySelect(role)}
+          <button
+            className="btn primary"
+            disabled={Boolean(busyKey) || !selectedStaff[role.id]}
+            onClick={() => void assignRole(role)}
+            type="button"
+          >
+            <Save size={15} />
+            {assigned ? 'Cambiar' : 'Asignar'}
+          </button>
+        </div>
+      </article>
+    )
+  }
+
+  return (
+    <div
+      aria-labelledby="event-staff-title"
+      aria-modal="true"
+      className="quick-modal-layer"
+      role="dialog"
+      onClick={onClose}
+    >
+      <div
+        className="quick-modal-card modal-2026 quick-modal-card-mobile staff-assignment-modal"
+        ref={modal.modalRef}
+        onPointerDownCapture={modal.handlePointerDown}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="quick-modal-head modal-2026-head staff-assignment-head">
+          <div>
+            <h3 id="event-staff-title">Asignar equipo</h3>
+            <p>
+              {event.title} - {event.eventDate} - {shortTime(event.startTime)} a {shortTime(event.endTime)}
+            </p>
+          </div>
+          <button className="btn icon modal-close-btn" disabled={Boolean(busyKey)} onClick={onClose} type="button">
+            <X size={15} />
+            Cerrar
+          </button>
+        </div>
+        <div className="modal-2026-body staff-assignment-body" ref={modal.modalBodyRef}>
+          <div className="staff-assignment-summary">
+            <article>
+              <span>Asignados</span>
+              <strong>{assignments.length}</strong>
+            </article>
+            <article>
+              <span>Ambiente</span>
+              <strong>{event.floorName}</strong>
+            </article>
+            <article>
+              <span>Cliente</span>
+              <strong>{event.clientName}</strong>
+            </article>
+          </div>
+
+          {notice && <p className="message ok">{notice}</p>}
+          {error && <p className="message error">{error}</p>}
+          {loading && <p className="empty">Cargando disponibilidad del equipo...</p>}
+
+          {!loading && (
+            <div className="event-staff-grid">
+              {fixedRoles.slice(0, 7).map(renderRoleCard)}
+              <article className="event-staff-role-card event-staff-mozos-card">
+                <header>
+                  <div>
+                    <h4>{mozosRole.label}</h4>
+                    <p>{mozosRole.hint}</p>
+                  </div>
+                  <span>{mozoAssignments.length}</span>
+                </header>
+                <div className="event-staff-mozos-list">
+                  {mozoAssignments.length === 0 ? (
+                    <p className="empty compact">Aun no hay mozos asignados.</p>
+                  ) : (
+                    mozoAssignments.map(renderAssigned)
+                  )}
+                </div>
+                <div className="event-staff-assign-line">
+                  {renderAvailabilitySelect(mozosRole)}
+                  <button
+                    className="btn primary"
+                    disabled={Boolean(busyKey) || !selectedStaff.MOZOS}
+                    onClick={() => void assignRole(mozosRole, nextMozoSlot)}
+                    type="button"
+                  >
+                    <Plus size={15} />
+                    Agregar {mozoSlotLabel(nextMozoSlot)}
+                  </button>
+                </div>
+              </article>
+              {fixedRoles.slice(7).map(renderRoleCard)}
+            </div>
+          )}
+        </div>
+        <div className="form-actions modal-2026-actions">
+          <button className="btn ghost" disabled={Boolean(busyKey)} onClick={onClose} type="button">
+            Listo
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -3837,22 +4270,40 @@ function InventoryView({
   const formUnitValue =
     Number(inventoryForm.cantidad || 0) > 0 ? Number(inventoryForm.valorTotal || 0) / Number(inventoryForm.cantidad) : 0
   const pisoOptions = useMemo(() => {
-    const values = new Set<string>()
-    values.add('1er Piso')
+    const values = new Map<string, string>()
+    ;['1er piso', '2do piso', '3er y 4to piso'].forEach((piso) => values.set(piso, piso))
     floors.forEach((floor) => {
-      if (floor.name) values.add(floor.name)
+      const piso = canonicalInventoryPiso(floor.name)
+      if (piso) values.set(piso, piso)
     })
     inventory?.items.forEach((item) => {
-      if (item.piso) values.add(item.piso)
+      const piso = canonicalInventoryPiso(item.piso)
+      if (piso) values.set(piso, piso)
     })
-    if (inventoryForm.piso) values.add(inventoryForm.piso)
-    return Array.from(values).map((value) => ({ value, label: value }))
+    const currentPiso = canonicalInventoryPiso(inventoryForm.piso)
+    if (currentPiso) values.set(currentPiso, currentPiso)
+    return Array.from(values.values()).map((value) => ({ value, label: value }))
   }, [floors, inventory, inventoryForm.piso])
+  const inventoryPisoSummary = useMemo(() => {
+    const values = new Map<string, { piso: string; itemCount: number; totalQuantity: number; totalValue: number }>()
+    inventory?.summary.byPiso.forEach((summary) => {
+      const piso = canonicalInventoryPiso(summary.piso)
+      if (!piso) return
+      const current = values.get(piso) ?? { piso, itemCount: 0, totalQuantity: 0, totalValue: 0 }
+      current.itemCount += Number(summary.itemCount ?? 0)
+      current.totalQuantity += Number(summary.totalQuantity ?? 0)
+      current.totalValue += Number(summary.totalValue ?? 0)
+      values.set(piso, current)
+    })
+    return Array.from(values.values())
+  }, [inventory])
+  const pisoMetrics = useMemo(() => new Map(inventoryPisoSummary.map((summary) => [summary.piso, summary])), [inventoryPisoSummary])
+  const pisoFilterOptions = useMemo(() => [{ value: 'ALL', label: 'Todos' }, ...pisoOptions], [pisoOptions])
   const filteredItems = useMemo(
     () => {
       const items = inventory?.items ?? []
       return items.filter((item) => {
-        const matchesPiso = pisoFilter === 'ALL' || item.piso === pisoFilter
+        const matchesPiso = pisoFilter === 'ALL' || canonicalInventoryPiso(item.piso) === pisoFilter
         const matchesCategory = categoryFilter === 'ALL' || item.categoriaId === categoryFilter
         return matchesPiso && matchesCategory
       })
@@ -3861,19 +4312,34 @@ function InventoryView({
   )
   const filteredValue = filteredItems.reduce((total, item) => total + Number(item.valorTotal ?? 0), 0)
   const filteredQuantity = filteredItems.reduce((total, item) => total + Number(item.cantidad ?? 0), 0)
+  const filteredCategorySummary = useMemo(() => {
+    const values = new Map<string, { piso: string; categoria: string; itemCount: number; totalQuantity: number; totalValue: number }>()
+    filteredItems.forEach((item) => {
+      const piso = canonicalInventoryPiso(item.piso)
+      const key = `${piso}|${item.categoria}`
+      const current = values.get(key) ?? { piso, categoria: item.categoria, itemCount: 0, totalQuantity: 0, totalValue: 0 }
+      current.itemCount += 1
+      current.totalQuantity += Number(item.cantidad ?? 0)
+      current.totalValue += Number(item.valorTotal ?? 0)
+      values.set(key, current)
+    })
+    return Array.from(values.values())
+  }, [filteredItems])
+  const activePisoLabel = pisoFilter === 'ALL' ? 'Todos los pisos' : pisoFilter
+  const activeCategoryLabel = categoryFilter === 'ALL' ? 'Todas las categorías' : categories.find((category) => category.id === categoryFilter)?.nombre ?? 'Categoría'
 
   return (
     <section className={`grid inventory-layout ${mode === 'create' ? 'inventory-create-layout' : 'inventory-list-layout'}`}>
       {mode === 'create' && (
       <div className="panel inventory-create-panel">
-        <h2>Registrar articulos</h2>
+        <h2>Registrar artículos</h2>
         <form onSubmit={submitInventory}>
           <div className="form-grid">
             <label>
               Piso
               <FancySelect
-                value={inventoryForm.piso}
-                onChange={(nextValue) => updateInventory('piso', nextValue)}
+                value={canonicalInventoryPiso(inventoryForm.piso)}
+                onChange={(nextValue) => updateInventory('piso', canonicalInventoryPiso(nextValue))}
                 required
                 options={pisoOptions}
               />
@@ -3990,36 +4456,48 @@ function InventoryView({
       )}
 
       {mode === 'list' && (
-      <div className="panel">
-        <h2>Resumen contable</h2>
-        <section className="inventory-summary">
+      <div className="panel inventory-overview-panel">
+        <div className="inventory-hero-row">
+          <div>
+            <p className="inventory-eyebrow">Control valorizado</p>
+            <h2>Inventario</h2>
+            <span>{activePisoLabel} - {activeCategoryLabel}</span>
+          </div>
+          <strong>{money.format(filteredValue)}</strong>
+        </div>
+        <section className="inventory-summary inventory-kpi-grid">
           <article>
             <span>Registros</span>
-            <strong>{inventory?.summary.itemCount ?? 0}</strong>
+            <strong>{filteredItems.length}</strong>
           </article>
           <article>
             <span>Cantidad total</span>
-            <strong>{formatQuantity(inventory?.summary.totalQuantity ?? 0)}</strong>
+            <strong>{formatQuantity(filteredQuantity)}</strong>
           </article>
           <article>
-            <span>Valor total</span>
-            <strong>{money.format(inventory?.summary.totalValue ?? 0)}</strong>
+            <span>Valor filtrado</span>
+            <strong>{money.format(filteredValue)}</strong>
           </article>
         </section>
 
-        <div className="item-list">
-          {(inventory?.summary.byPiso ?? []).length === 0 && <p className="empty">Aun no hay inventario registrado.</p>}
-          {inventory?.summary.byPiso.map((piso) => (
-            <article className="item-card" key={piso.piso}>
-              <header>
-                <strong>{piso.piso}</strong>
-                <span>{money.format(piso.totalValue)}</span>
-              </header>
-              <p>
-                {piso.itemCount} registros - {formatQuantity(piso.totalQuantity)} unidades
-              </p>
-            </article>
-          ))}
+        <div className="inventory-floor-tabs" role="tablist" aria-label="Filtro rápido por piso">
+          {pisoFilterOptions.map((option) => {
+            const metric = option.value === 'ALL' ? null : pisoMetrics.get(option.value)
+            const total = option.value === 'ALL' ? inventory?.summary.totalValue ?? 0 : metric?.totalValue ?? 0
+            return (
+              <button
+                aria-selected={pisoFilter === option.value}
+                className={pisoFilter === option.value ? 'active' : ''}
+                key={option.value}
+                onClick={() => setPisoFilter(option.value)}
+                role="tab"
+                type="button"
+              >
+                <span>{option.label}</span>
+                <small>{money.format(total)}</small>
+              </button>
+            )
+          })}
         </div>
       </div>
       )}
@@ -4034,7 +4512,7 @@ function InventoryView({
               <FancySelect
                 value={pisoFilter}
                 onChange={(nextValue) => setPisoFilter(nextValue)}
-                options={[{ value: 'ALL', label: 'Todos' }, ...pisoOptions]}
+                options={pisoFilterOptions}
               />
             </label>
             <label className="compact-filter">
@@ -4052,7 +4530,7 @@ function InventoryView({
           <strong>{money.format(filteredValue)}</strong>
         </div>
         <div className="inventory-category-breakdown">
-          {(inventory?.summary.byCategory ?? []).slice(0, 8).map((category) => (
+          {filteredCategorySummary.slice(0, 8).map((category) => (
             <article key={`${category.piso}-${category.categoria}`}>
               <span>{category.piso}</span>
               <strong>{category.categoria}</strong>
@@ -4105,7 +4583,7 @@ function InventoryTable({
                   <br />
                   <small>{item.descripcion || item.observacion || 'Sin descripcion'}</small>
                 </td>
-                <td>{item.piso}</td>
+                <td>{canonicalInventoryPiso(item.piso)}</td>
                 <td>
                   <strong>{item.categoria}</strong>
                   <br />
@@ -4155,7 +4633,7 @@ function InventoryTable({
             <dl>
               <div>
                 <dt>Piso</dt>
-                <dd>{item.piso}</dd>
+                <dd>{canonicalInventoryPiso(item.piso)}</dd>
               </div>
               <div>
                 <dt>Cantidad</dt>
@@ -4216,7 +4694,7 @@ function AiView({
   ]
 
   return (
-    <section className="grid two">
+    <section className="grid two ai-layout">
       <div className="panel">
         <h2>Asistente IA</h2>
         <div className="tabs">

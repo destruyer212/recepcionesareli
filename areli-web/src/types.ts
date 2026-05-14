@@ -232,6 +232,43 @@ export type WorkerPayload = {
   notes?: string
 }
 
+export type EventStaffRoleKey = Exclude<WorkerCategory, `MOZO_${number}`> | 'MOZOS'
+
+export type EventStaffAssignment = {
+  id: string
+  eventId: string
+  staffMemberId: string
+  staffName: string
+  staffPhone?: string
+  workerCategory: WorkerCategory
+  roleKey: EventStaffRoleKey
+  roleLabel: string
+  slotNumber?: number
+  notes?: string
+}
+
+export type StaffAvailability = {
+  staffMemberId: string
+  staffName: string
+  staffPhone?: string
+  workerCategory: WorkerCategory
+  available: boolean
+  reason?: string
+  conflictEventId?: string
+  conflictEventTitle?: string
+  conflictEventDate?: string
+  conflictStartTime?: string
+  conflictEndTime?: string
+}
+
+export type EventStaffAssignmentPayload = {
+  staffMemberId: string
+  roleKey: EventStaffRoleKey
+  roleLabel?: string
+  slotNumber?: number
+  notes?: string
+}
+
 export type ClientPayload = {
   fullName: string
   documentType?: DocumentType

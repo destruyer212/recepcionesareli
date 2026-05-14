@@ -16,9 +16,11 @@ import com.areli.api.web.dto.InventoryDtos.InventorySubcategoryResponse;
 import com.areli.api.web.dto.InventoryDtos.InventorySummary;
 import jakarta.persistence.EntityNotFoundException;
 import java.math.BigDecimal;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -80,7 +82,7 @@ public class InventoryService {
             throw new IllegalArgumentException("La subcategoria no pertenece a la categoria seleccionada");
         }
 
-        String piso = cleanRequired(request.piso(), "El piso es obligatorio");
+        String piso = normalizePiso(request.piso());
         String nombre = cleanRequired(request.nombre(), "El nombre del item es obligatorio");
         InventoryItem item = inventoryItems
                 .findByPisoIgnoreCaseAndCategoria_IdAndSubcategoria_IdAndNombreIgnoreCase(
@@ -125,17 +127,18 @@ public class InventoryService {
             totalQuantity = totalQuantity.add(quantity);
             totalValue = totalValue.add(itemTotal);
 
+            String pisoName = normalizePiso(item.piso());
             MutablePisoSummary piso = byPiso.computeIfAbsent(
-                    item.piso(),
-                    ignored -> new MutablePisoSummary(item.piso()));
+                    pisoName,
+                    ignored -> new MutablePisoSummary(pisoName));
             piso.itemCount++;
             piso.totalQuantity = piso.totalQuantity.add(quantity);
             piso.totalValue = piso.totalValue.add(itemTotal);
 
-            String categoryKey = item.piso() + "|" + item.categoria();
+            String categoryKey = pisoName + "|" + item.categoria();
             MutableCategorySummary category = byCategory.computeIfAbsent(
                     categoryKey,
-                    ignored -> new MutableCategorySummary(item.piso(), item.categoria()));
+                    ignored -> new MutableCategorySummary(pisoName, item.categoria()));
             category.itemCount++;
             category.totalQuantity = category.totalQuantity.add(quantity);
             category.totalValue = category.totalValue.add(itemTotal);
@@ -154,6 +157,27 @@ public class InventoryService {
             throw new IllegalArgumentException("Estado de inventario no valido");
         }
         return estado;
+    }
+
+    private static String normalizePiso(String value) {
+        String piso = cleanRequired(value, "El piso es obligatorio");
+        String normalized = Normalizer.normalize(piso, Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "")
+                .toLowerCase(Locale.ROOT);
+        if (normalized.contains("1er") || normalized.contains("piso 1") || normalized.contains("primer piso")) {
+            return "1er piso";
+        }
+        if (normalized.contains("2do") || normalized.contains("piso 2") || normalized.contains("segundo piso")) {
+            return "2do piso";
+        }
+        if (normalized.contains("3er")
+                || normalized.contains("4to")
+                || normalized.contains("3 y 4")
+                || normalized.contains("3ro")
+                || normalized.contains("cuarto piso")) {
+            return "3er y 4to piso";
+        }
+        return piso;
     }
 
     private static String cleanRequired(String value, String message) {

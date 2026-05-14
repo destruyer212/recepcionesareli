@@ -6,8 +6,11 @@ import type {
   AppSettings,
   ContractPreview,
   DashboardSummary,
+  EventStaffAssignment,
+  EventStaffAssignmentPayload,
   EventItem,
   RescheduleOptions,
+  StaffAvailability,
   EventPackage,
   EventPayload,
   Floor,
@@ -105,6 +108,19 @@ export const api = {
   packages: () => request<EventPackage[]>('/packages'),
   events: () => request<EventItem[]>('/events'),
   contractPreview: (eventId: string) => request<ContractPreview>(`/events/${eventId}/contract-preview`),
+  eventStaffAssignments: (eventId: string) =>
+    request<EventStaffAssignment[]>(`/events/${eventId}/staff-assignments`),
+  eventStaffAvailability: (eventId: string, roleKey: string) =>
+    request<StaffAvailability[]>(
+      `/events/${eventId}/staff-assignments/availability?roleKey=${encodeURIComponent(roleKey)}`,
+    ),
+  assignEventStaff: (eventId: string, payload: EventStaffAssignmentPayload) =>
+    request<EventStaffAssignment>(`/events/${eventId}/staff-assignments`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  removeEventStaffAssignment: (eventId: string, assignmentId: string) =>
+    request<void>(`/events/${eventId}/staff-assignments/${assignmentId}`, { method: 'DELETE' }),
   createEvent: (payload: EventPayload) =>
     request<EventItem>('/events', { method: 'POST', body: JSON.stringify(cleanEventPayload(payload)) }),
   updateEvent: (
