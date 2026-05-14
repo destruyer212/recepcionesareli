@@ -41,6 +41,7 @@ import type {
   ClientPayload,
   ContractPreview,
   DashboardSummary,
+  DocumentType,
   ApdaycPayer,
   ApdaycStatus,
   EventStaffAssignment,
@@ -864,17 +865,17 @@ type EventStaffRoleConfig = {
 const eventStaffRoles: EventStaffRoleConfig[] = [
   { id: 'EVENT_PLANNER', label: 'Event Planner', hint: 'Plan general, proveedores y cronograma.' },
   { id: 'COORDINADOR_EVENTO', label: 'Coordinador del Evento', hint: 'Responsable operativo durante el evento.' },
-  { id: 'DJ', label: 'DJ', hint: 'MÃºsica, cabina y momentos especiales.' },
-  { id: 'FOTOGRAFO', label: 'FotÃ³grafo', hint: 'Registro fotogrÃ¡fico del evento.' },
-  { id: 'VIDEOGRAFO', label: 'VideÃ³grafo', hint: 'Video, reels, tomas y entrega final.' },
+  { id: 'DJ', label: 'DJ', hint: 'Música, cabina y momentos especiales.' },
+  { id: 'FOTOGRAFO', label: 'Fotógrafo', hint: 'Registro fotográfico del evento.' },
+  { id: 'VIDEOGRAFO', label: 'Videógrafo', hint: 'Video, reels, tomas y entrega final.' },
   { id: 'SEGURIDAD', label: 'Seguridad', hint: 'Control de ingreso y orden.' },
-  { id: 'ANFITRIONA', label: 'Anfitriona', hint: 'RecepciÃ³n e indicaciones a invitados.' },
+  { id: 'ANFITRIONA', label: 'Anfitriona', hint: 'Recepción e indicaciones a invitados.' },
   { id: 'MOZOS', label: 'Mozos', hint: 'Sub lista numerada: Mozo 1, Mozo 2, Mozo 3 y los que necesites.', multi: true },
   { id: 'BARMAN', label: 'Barman', hint: 'Bar, bebidas y servicio de cocteles.' },
-  { id: 'HORA_LOCA', label: 'Hora Loca', hint: 'Show, animaciÃ³n y accesorios.' },
-  { id: 'DECORACION', label: 'Personal de DecoraciÃ³n', hint: 'Montaje, estilo y detalles visuales.' },
-  { id: 'BOCADITOS', label: 'Personal de Bocaditos', hint: 'Mesa dulce, salados y atenciÃ³n.' },
-  { id: 'COCINA', label: 'Personal de Cocina', hint: 'PreparaciÃ³n, apoyo y salida de platos.' },
+  { id: 'HORA_LOCA', label: 'Hora Loca', hint: 'Show, animación y accesorios.' },
+  { id: 'DECORACION', label: 'Personal de Decoración', hint: 'Montaje, estilo y detalles visuales.' },
+  { id: 'BOCADITOS', label: 'Personal de Bocaditos', hint: 'Mesa dulce, salados y atención.' },
+  { id: 'COCINA', label: 'Personal de Cocina', hint: 'Preparación, apoyo y salida de platos.' },
   { id: 'LIMPIEZA', label: 'Personal de Limpieza', hint: 'Orden antes, durante y cierre.' },
   { id: 'APOYO', label: 'Personal de Apoyo', hint: 'Refuerzos para tareas generales.' },
 ]
@@ -977,13 +978,6 @@ function App() {
   const [editingEvent, setEditingEvent] = useState<EventItem | null>(null)
   const [editEventForm, setEditEventForm] = useState<EventPayload | null>(null)
   const [editBusy, setEditBusy] = useState(false)
-  const [aiMode, setAiMode] = useState<AiMode>('contract')
-  const [aiPrompt, setAiPrompt] = useState(
-    'Evento de 15 años en el 3er y 4to piso combinado, paquete Premium, cliente con saldo pendiente y garantía por registrar.',
-  )
-  const [aiResult, setAiResult] = useState<AiResponse | null>(null)
-  const [aiLoading, setAiLoading] = useState(false)
-
   const selectedPackage = useMemo(
     () => packages.find((item) => item.id === eventForm.packageId),
     [eventForm.packageId, packages],
@@ -1182,6 +1176,78 @@ function App() {
     }
   }
 
+  async function createEventFromAi(draft: AiEventDraft) {
+    setMessage('')
+    setError('')
+    let clientId = draft.clientId ?? ''
+    if (!clientId && draft.clientName?.trim() && draft.clientPhone?.trim()) {
+      const documentType = draft.clientDocumentType ?? 'DNI'
+      const documentNumber = (draft.clientDocumentNumber ?? '').replace(/\D/g, '')
+      if (documentType === 'DNI' && documentNumber.length !== 8) {
+        throw new Error('Para crear un cliente nuevo desde IA falta un DNI valido de 8 digitos.')
+      }
+      if (documentType === 'RUC' && documentNumber.length !== 11) {
+        throw new Error('Para crear un cliente nuevo desde IA falta un RUC valido de 11 digitos.')
+      }
+      const createdClient = await api.createClient({
+        fullName: draft.clientName.trim(),
+        documentType,
+        documentNumber,
+        phone: draft.clientPhone.trim(),
+        whatsapp: draft.clientPhone.trim(),
+        email: draft.clientEmail?.trim() || undefined,
+      })
+      clientId = createdClient.id
+    }
+
+    const selectedClient = clients.find((item) => item.id === clientId)
+    const hasNewClientContact = !selectedClient && Boolean(draft.clientName?.trim() && draft.clientPhone?.trim())
+    const contractContact = selectedClient ? contractualContactNumber(selectedClient) : draft.clientPhone?.trim() ?? ''
+    if (!clientId) {
+      throw new Error('Falta seleccionar un cliente registrado o dar nombre y telefono para crear uno.')
+    }
+    if (!contractContact && !hasNewClientContact) {
+      throw new Error('El cliente necesita WhatsApp o telefono antes de separar.')
+    }
+    if (!draft.floorId) {
+      throw new Error('Falta seleccionar ambiente.')
+    }
+  if (!draft.eventDate || !draft.startTime || !draft.endTime) {
+    throw new Error('Falta completar fecha y horario.')
+  }
+  if (!draft.contractCapacityOverride || Number(draft.contractCapacityOverride) <= 0) {
+    throw new Error('Falta capacidad contractual mayor a 0.')
+  }
+  if (!draft.totalAmount || Number(draft.totalAmount) <= 0) {
+    throw new Error('Falta monto total mayor a 0.')
+  }
+  if (!isAiApdaycComplete(draft)) {
+    throw new Error('Falta completar APDAYC en el asistente IA.')
+  }
+
+  await api.createEvent({
+      clientId,
+      floorId: draft.floorId,
+      packageId: draft.packageId || undefined,
+      title: draft.title || `${draft.eventType || 'Evento'} - ${draft.clientName || selectedClient?.fullName || 'Cliente'}`,
+      eventType: draft.eventType || 'Evento',
+      eventDate: draft.eventDate,
+      startTime: draft.startTime,
+      endTime: draft.endTime,
+      status: draft.status ?? 'SEPARATED',
+      totalAmount: Number(draft.totalAmount),
+      apdaycAmount: Number(draft.apdaycAmount ?? 0),
+      apdaycPayer: draft.apdaycPayer ?? 'CLIENT',
+      apdaycStatus: draft.apdaycStatus ?? 'NOT_APPLIES',
+      contractCapacityOverride: Number(draft.contractCapacityOverride),
+      apdaycNotes: draft.apdaycNotes || undefined,
+      notes: draft.notes || undefined,
+    })
+    setMessage('Evento creado desde el asistente IA.')
+    await loadData()
+    setView('eventsRegistered')
+  }
+
   async function submitInventory(event: FormEvent) {
     event.preventDefault()
     setMessage('')
@@ -1296,53 +1362,6 @@ function App() {
       setView('inventory')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'No se pudo retirar el artículo.')
-    }
-  }
-
-  async function runAi() {
-    setAiLoading(true)
-    setAiResult(null)
-    setError('')
-    try {
-      const firstEvent = events[0]
-      let result: AiResponse
-      if (aiMode === 'contract') {
-        result = await api.aiContract({
-          clientName: firstEvent?.clientName ?? 'Cliente pendiente',
-          clientDocument: '',
-          eventType: firstEvent?.eventType ?? 'Evento personalizado',
-          floorName: firstEvent?.floorName ?? 'Ambiente pendiente',
-          eventDate: firstEvent?.eventDate ?? eventForm.eventDate,
-          startTime: firstEvent?.startTime ?? eventForm.startTime,
-          endTime: firstEvent?.endTime ?? eventForm.endTime,
-          packageName: firstEvent?.packageName ?? selectedPackage?.name ?? 'Paquete pendiente',
-          totalAmount: firstEvent?.totalAmount ?? eventForm.totalAmount,
-          depositAmount: 0,
-          guaranteeAmount: selectedPackage?.guaranteeAmount ?? 0,
-          specialTerms: aiPrompt,
-        })
-      } else if (aiMode === 'summary') {
-        result = await api.aiSummary({ eventDetails: aiPrompt })
-      } else if (aiMode === 'marketing') {
-        result = await api.aiMarketing({
-          packageName: selectedPackage?.name ?? 'Paquete Areli',
-          audience: 'Clientes interesados en eventos elegantes en Carabayllo',
-          offerDetails: aiPrompt,
-        })
-      } else {
-        result = await api.aiBalance({
-          income: summary?.totalContracted ?? 0,
-          staffPayments: 0,
-          expenses: 0,
-          pendingBalance: 0,
-          period: 'Mes actual',
-        })
-      }
-      setAiResult(result)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'No se pudo ejecutar la IA.')
-    } finally {
-      setAiLoading(false)
     }
   }
 
@@ -1671,13 +1690,10 @@ function App() {
         )}
         {!loading && view === 'ai' && (
           <AiView
-            aiMode={aiMode}
-            setAiMode={setAiMode}
-            aiPrompt={aiPrompt}
-            setAiPrompt={setAiPrompt}
-            aiResult={aiResult}
-            aiLoading={aiLoading}
-            runAi={runAi}
+            clients={clients}
+            floors={floors}
+            packages={packages}
+            onCreateEvent={createEventFromAi}
           />
         )}
         {!loading && view === 'settings' && <SettingsView />}
@@ -1705,7 +1721,7 @@ function titleFor(view: View) {
     inventoryCreate: 'Registrar artículos',
     workers: 'Trabajadores registrados',
     workersCreate: 'Registrar trabajador',
-    ai: 'Herramientas inteligentes',
+    ai: 'Asistente IA de eventos',
     settings: 'Configuración del sistema',
   }
   return labels[view]
@@ -4669,64 +4685,898 @@ function InventoryTable({
   )
 }
 
+type AiEventDraft = Partial<EventPayload> & {
+  clientName?: string
+  clientPhone?: string
+  clientDocumentType?: DocumentType
+  clientDocumentNumber?: string
+  clientEmail?: string
+  floorName?: string
+  packageName?: string
+  apdaycConfirmed?: boolean
+}
+
+type AiChatMessage = {
+  id: string
+  role: 'assistant' | 'user'
+  text: string
+}
+
+type AiDetectedResult = {
+  draft: AiEventDraft
+  detected: string[]
+  clientMatches: AiClientMatch[]
+}
+
+type AiClientMatch = {
+  id: string
+  name: string
+  phone: string
+  documentType?: DocumentType
+  documentNumber?: string
+  detail: string
+  score: number
+}
+
+type AiMissingField =
+  | 'client'
+  | 'clientDocument'
+  | 'floor'
+  | 'package'
+  | 'eventType'
+  | 'title'
+  | 'date'
+  | 'time'
+  | 'capacity'
+  | 'amount'
+  | 'apdayc'
+
+const monthNameToNumber: Record<string, number> = {
+  enero: 1,
+  febrero: 2,
+  marzo: 3,
+  abril: 4,
+  mayo: 5,
+  junio: 6,
+  julio: 7,
+  agosto: 8,
+  septiembre: 9,
+  setiembre: 9,
+  octubre: 10,
+  noviembre: 11,
+  diciembre: 12,
+}
+
+function newAiDraft(): AiEventDraft {
+  return {
+    status: 'SEPARATED',
+  }
+}
+
+function aiMessageId() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function normalizeAiText(value: string) {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function aiTitleFromDraft(draft: AiEventDraft, clientName?: string) {
+  if (!draft.eventType) return draft.title ?? ''
+  return `${draft.eventType} - ${clientName || draft.clientName || 'Cliente pendiente'}`
+}
+
+function normalizeAiMoney(value: string) {
+  return Number(value.replace(',', '.'))
+}
+
+function formatAiDraftValue(value: unknown) {
+  if (value === undefined || value === null || value === '') return 'Pendiente'
+  if (typeof value === 'number') return value > 0 ? money.format(value) : 'Pendiente'
+  return String(value)
+}
+
+function aiDigits(value: string) {
+  return value.replace(/\D/g, '')
+}
+
+function parseAiDocument(text: string): { documentType: DocumentType; documentNumber: string } | null {
+  const normalized = normalizeAiText(text)
+  const ruc = normalized.match(/\bruc\s*:?\s*(\d{11})\b/) ?? normalized.match(/\b(10\d{9}|20\d{9})\b/)
+  if (ruc) {
+    return { documentType: 'RUC', documentNumber: ruc[1] }
+  }
+  const dni = normalized.match(/\bdni\s*:?\s*(\d{8})\b/)
+  if (dni) {
+    return { documentType: 'DNI', documentNumber: dni[1] }
+  }
+  const looseDni = normalized.match(/\b(\d{8})\b/)
+  if (looseDni && !normalized.includes('monto') && !normalized.includes('total')) {
+    return { documentType: 'DNI', documentNumber: looseDni[1] }
+  }
+  return null
+}
+
+function validAiClientDocument(draft: AiEventDraft) {
+  const digits = aiDigits(draft.clientDocumentNumber ?? '')
+  return draft.clientDocumentType === 'RUC' ? digits.length === 11 : digits.length === 8
+}
+
+function isAiApdaycComplete(draft: AiEventDraft) {
+  if (!draft.apdaycConfirmed) return false
+  if (draft.apdaycStatus === 'NOT_APPLIES') return true
+  const amount = Number(draft.apdaycAmount)
+  return Boolean(draft.apdaycPayer && draft.apdaycStatus && Number.isFinite(amount) && amount > 0)
+}
+
+function formatAiApdaycDraft(draft: AiEventDraft) {
+  if (!draft.apdaycConfirmed) return 'Pendiente'
+  if (draft.apdaycStatus === 'NOT_APPLIES') return 'No aplica'
+  const amount = draft.apdaycAmount !== undefined ? money.format(Number(draft.apdaycAmount)) : 'Monto pendiente'
+  const payer = draft.apdaycPayer ? apdaycPayerLabels[draft.apdaycPayer] : 'Responsable pendiente'
+  return `${amount} - ${payer}`
+}
+
+function extractAiClientQuery(text: string) {
+  const explicit = text.match(
+    /\b(?:buscar cliente|cliente|para|a nombre de)\s+(.+?)(?=\s+(?:el|en|con|paquete|desde|de\s+\d|a\s+las|telefono|tel|whatsapp|dni|ruc|monto|total|capacidad)\b|[.,;]|$)/i,
+  )
+  if (explicit?.[1]) {
+    return explicit[1].replace(/[.,;]+$/g, '').trim()
+  }
+
+  const compact = text.replace(/[.,;]+$/g, '').trim()
+  const normalized = normalizeAiText(compact)
+  const words = normalized.split(' ').filter(Boolean)
+  const looksLikeOnlyAName =
+    words.length > 0 &&
+    words.length <= 4 &&
+    /[a-záéíóúñ]/i.test(compact) &&
+    !/\d/.test(compact) &&
+    !/\b(matrimonio|boda|cumple|quince|promo|promocion|piso|ambiente|paquete|monto|total|capacidad|apdayc|resumen|limpiar|nuevo)\b/.test(normalized)
+
+  return looksLikeOnlyAName ? compact : ''
+}
+
+function clientAiDetail(client: Client) {
+  const document = client.documentNumber ? `${client.documentType ?? 'Doc'} ${client.documentNumber}` : 'Sin documento'
+  const phone = contractualContactNumber(client) || 'Sin telefono'
+  return `${document} - ${phone}`
+}
+
+function toAiClientMatch(client: Client, score: number): AiClientMatch {
+  return {
+    id: client.id,
+    name: client.fullName,
+    phone: contractualContactNumber(client),
+    documentType: client.documentType,
+    documentNumber: client.documentNumber,
+    detail: clientAiDetail(client),
+    score,
+  }
+}
+
+function searchAiClientMatches(text: string, clients: Client[]) {
+  const normalized = normalizeAiText(text)
+  const document = parseAiDocument(text)
+  const phone = text.match(/\b9\d{8}\b/)?.[0]
+  const query = normalizeAiText(extractAiClientQuery(text))
+  const queryTokens = query
+    .split(' ')
+    .filter((token) => token.length > 2 && !['cliente', 'para', 'evento', 'matrimonio', 'cumpleanos'].includes(token))
+
+  return clients
+    .map((client) => {
+      const name = normalizeAiText(client.fullName)
+      const clientDocument = aiDigits(client.documentNumber ?? '')
+      const clientPhone = `${aiDigits(client.phone ?? '')} ${aiDigits(client.whatsapp ?? '')}`.trim()
+      let score = 0
+
+      if (document && clientDocument === document.documentNumber) score += 120
+      if (phone && clientPhone.includes(phone)) score += 90
+      if (query && name === query) score += 80
+      if (query && name.includes(query)) score += 55
+      score += queryTokens.filter((token) => name.includes(token)).length * 16
+      if (!query && normalized.includes(name)) score += 70
+
+      return score > 0 ? toAiClientMatch(client, score) : null
+    })
+    .filter((match): match is AiClientMatch => Boolean(match))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+}
+
+function shouldAutoSelectAiClient(text: string, match: AiClientMatch) {
+  const document = parseAiDocument(text)
+  const phone = text.match(/\b9\d{8}\b/)?.[0]
+  const query = normalizeAiText(extractAiClientQuery(text))
+  const normalizedName = normalizeAiText(match.name)
+  const normalizedText = normalizeAiText(text)
+
+  if (document && match.documentNumber === document.documentNumber) return true
+  if (phone && aiDigits(match.phone).includes(phone)) return true
+  if (query && query === normalizedName) return true
+  if (!query && normalizedText.includes(normalizedName)) return true
+  return false
+}
+
+function inferEventTypeFromText(normalized: string) {
+  if (/\b(matri|matrimonio|boda)\b/.test(normalized)) return 'Matrimonio'
+  if (/\b(15|quince|quincean|cumple de 15)\b/.test(normalized)) return '15 años'
+  if (/\b(promo|promocion)\b/.test(normalized)) return 'Promoción'
+  if (/\b(cumple|cumpleanos|birthday)\b/.test(normalized)) return 'Cumpleaños'
+  if (/\b(bautizo|bautismo)\b/.test(normalized)) return 'Bautizo'
+  if (/\b(corporativo|empresa|institucional)\b/.test(normalized)) return 'Corporativo'
+  return ''
+}
+
+function parseAiDate(text: string) {
+  const normalized = normalizeAiText(text)
+  const iso = normalized.match(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/)
+  if (iso) {
+    return `${iso[1]}-${iso[2].padStart(2, '0')}-${iso[3].padStart(2, '0')}`
+  }
+  const slash = normalized.match(/\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b/)
+  if (slash) {
+    const year = slash[3] ? Number(slash[3].length === 2 ? `20${slash[3]}` : slash[3]) : new Date().getFullYear()
+    return `${year}-${slash[2].padStart(2, '0')}-${slash[1].padStart(2, '0')}`
+  }
+  const monthMatch = normalized.match(/\b(\d{1,2})\s*(?:de\s*)?(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/)
+  if (monthMatch) {
+    const day = Number(monthMatch[1])
+    const month = monthNameToNumber[monthMatch[2]]
+    const today = new Date()
+    let year = today.getFullYear()
+    const candidate = new Date(year, month - 1, day)
+    if (candidate < new Date(today.getFullYear(), today.getMonth(), today.getDate())) {
+      year += 1
+    }
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  }
+  return ''
+}
+
+function normalizeAiHour(hourValue: string, minuteValue: string | undefined, suffix: string | undefined, isEnd: boolean, startHour: number, normalizedText: string) {
+  let hour = Number(hourValue)
+  const minute = minuteValue ?? '00'
+  const cleanSuffix = suffix ?? ''
+  if (cleanSuffix === 'am' && hour === 12) hour = 0
+  if (cleanSuffix === 'pm' && hour < 12) hour += 12
+  if ((cleanSuffix === 'noche' || cleanSuffix === 'tarde') && hour < 12) hour += 12
+  if (cleanSuffix === 'madrugada' && hour === 12) hour = 0
+  if (!cleanSuffix && !isEnd && hour >= 5 && hour <= 11 && (normalizedText.includes('noche') || normalizedText.includes('pm'))) {
+    hour += 12
+  }
+  if (!cleanSuffix && !isEnd && hour >= 6 && hour <= 11 && normalizedText.match(/\b\d{1,2}\s*(?:a|hasta|-)\s*\d{1,2}\b/)) {
+    hour += 12
+  }
+  if (!cleanSuffix && isEnd && hour > 12) {
+    hour = hour % 24
+  }
+  if (!cleanSuffix && isEnd && hour > 0 && hour <= 6 && startHour >= 12) {
+    return `${String(hour).padStart(2, '0')}:${minute}`
+  }
+  return `${String(hour).padStart(2, '0')}:${minute}`
+}
+
+function parseAiTimeRange(text: string) {
+  const normalized = normalizeAiText(text)
+  const range = normalized.match(/\b(?:de\s*)?(?:las\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|noche|tarde|madrugada)?\s*(?:a|hasta|-)\s*(?:las\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|noche|tarde|madrugada)?\b/)
+  if (!range) return null
+  const start = normalizeAiHour(range[1], range[2], range[3], false, 0, normalized)
+  const startHour = Number(start.slice(0, 2))
+  const end = normalizeAiHour(range[4], range[5], range[6], true, startHour, normalized)
+  return { startTime: start, endTime: end }
+}
+
+function findAiClient(text: string, clients: Client[]) {
+  const matches = searchAiClientMatches(text, clients)
+  const confident = matches[0]
+  if (confident && shouldAutoSelectAiClient(text, confident)) {
+    return confident
+  }
+  if (matches.length > 0) {
+    return null
+  }
+
+  const guessedName = extractAiClientQuery(text)
+  if (guessedName && guessedName.length > 2) {
+    return { id: '', name: guessedName, phone: '', detail: 'Cliente nuevo pendiente de DNI/RUC y telefono', score: 0 }
+  }
+  return null
+}
+
+function findAiFloor(text: string, floors: Floor[]) {
+  const normalized = normalizeAiText(text)
+  const canonical = normalized.includes('segundo') || normalized.includes('2do') || normalized.includes('piso 2')
+    ? '2do piso'
+    : normalized.includes('tercer') || normalized.includes('cuarto') || normalized.includes('3 y 4') || normalized.includes('3er') || normalized.includes('4to')
+      ? '3er y 4to piso'
+      : normalized.includes('primer') || normalized.includes('1er') || normalized.includes('piso 1')
+        ? '1er piso'
+        : ''
+  if (canonical) {
+    return floors.find((floor) => canonicalInventoryPiso(floor.name) === canonical)
+  }
+  return floors.find((floor) => normalized.includes(normalizeAiText(floor.name)))
+}
+
+function findAiPackage(text: string, packages: EventPackage[]) {
+  const normalized = normalizeAiText(text)
+  return packages
+    .slice()
+    .sort((a, b) => b.name.length - a.name.length)
+    .find((eventPackage) => normalized.includes(normalizeAiText(eventPackage.name)))
+}
+
+function applyAiExtraction(message: string, currentDraft: AiEventDraft, clients: Client[], floors: Floor[], packages: EventPackage[]): AiDetectedResult {
+  const normalized = normalizeAiText(message)
+  const nextDraft: AiEventDraft = { ...currentDraft }
+  const detected: string[] = []
+  const clientMatches = searchAiClientMatches(message, clients)
+  const client = findAiClient(message, clients)
+  const clientQuery = extractAiClientQuery(message)
+  const phone = message.match(/\b9\d{8}\b/)?.[0]
+  const document = parseAiDocument(message)
+  const eventType = inferEventTypeFromText(normalized)
+  const floor = findAiFloor(message, floors)
+  const eventPackage = findAiPackage(message, packages)
+  const eventDate = parseAiDate(message)
+  const timeRange = parseAiTimeRange(message)
+  const amount = normalized.match(/\b(?:monto|total|precio|costo|s\/|soles)\s*:?\s*(\d+(?:[.,]\d+)?)\b/)
+  const apdaycAmount = normalized.match(/\bapdayc\s*:?\s*(\d+(?:[.,]\d+)?)\b/)
+  const apdaycNoAplica = /\b(?:sin\s+apdayc|apdayc\s+no\s+aplica|no\s+aplica\s+apdayc|no\s+aplica)\b/.test(normalized)
+  const capacity = normalized.match(/\b(?:capacidad|aforo|para)\s*:?\s*(\d{2,4})\s*(?:personas|invitados|pax)?\b/)
+
+  if (client) {
+    nextDraft.clientId = client.id || nextDraft.clientId
+    nextDraft.clientName = client.name
+    nextDraft.clientPhone = client.phone || nextDraft.clientPhone
+    nextDraft.clientDocumentType = client.documentType || nextDraft.clientDocumentType
+    nextDraft.clientDocumentNumber = client.documentNumber || nextDraft.clientDocumentNumber
+    detected.push(client.id ? 'cliente registrado' : 'nombre de cliente')
+  } else if (clientMatches.length > 0) {
+    if (clientQuery) nextDraft.clientName = clientQuery
+    detected.push(clientMatches.length === 1 ? 'cliente registrado probable' : 'posibles clientes registrados')
+  }
+  if (phone) {
+    nextDraft.clientPhone = phone
+    detected.push('telefono de cliente')
+  }
+  if (document) {
+    nextDraft.clientDocumentType = document.documentType
+    nextDraft.clientDocumentNumber = document.documentNumber
+    detected.push(document.documentType)
+  }
+  if (eventType) {
+    nextDraft.eventType = eventType
+    detected.push('tipo de evento')
+  }
+  if (floor) {
+    nextDraft.floorId = floor.id
+    nextDraft.floorName = floor.name
+    detected.push('ambiente')
+  }
+  if (eventPackage) {
+    nextDraft.packageId = eventPackage.id
+    nextDraft.packageName = eventPackage.name
+    if (!nextDraft.totalAmount || Number(nextDraft.totalAmount) <= 0) {
+      nextDraft.totalAmount = Number(eventPackage.basePrice ?? 0)
+    }
+    if (!nextDraft.contractCapacityOverride || Number(nextDraft.contractCapacityOverride) <= 0) {
+      nextDraft.contractCapacityOverride = Number(eventPackage.includedCapacity ?? 0)
+    }
+    detected.push('paquete')
+  }
+  if (eventDate) {
+    nextDraft.eventDate = eventDate
+    detected.push('fecha')
+  }
+  if (timeRange) {
+    nextDraft.startTime = timeRange.startTime
+    nextDraft.endTime = timeRange.endTime
+    detected.push('horario')
+  }
+  if (amount) {
+    nextDraft.totalAmount = normalizeAiMoney(amount[1])
+    detected.push('monto total')
+  }
+  if (apdaycAmount) {
+    nextDraft.apdaycAmount = normalizeAiMoney(apdaycAmount[1])
+    nextDraft.apdaycConfirmed = true
+    detected.push('monto APDAYC')
+  }
+  if (capacity) {
+    nextDraft.contractCapacityOverride = Number(capacity[1])
+    detected.push('capacidad contractual')
+  }
+  if (apdaycNoAplica) {
+    nextDraft.apdaycAmount = 0
+    nextDraft.apdaycPayer = 'CLIENT'
+    nextDraft.apdaycStatus = 'NOT_APPLIES'
+    nextDraft.apdaycConfirmed = true
+    detected.push('APDAYC no aplica')
+  } else if (normalized.includes('apdayc') && normalized.includes('cliente')) {
+    nextDraft.apdaycPayer = 'CLIENT'
+    nextDraft.apdaycConfirmed = true
+    detected.push('APDAYC asumido por cliente')
+  } else if (normalized.includes('apdayc') && normalized.includes('areli')) {
+    nextDraft.apdaycPayer = 'ARELI'
+    nextDraft.apdaycConfirmed = true
+    detected.push('APDAYC asumido por Areli')
+  } else if (normalized.includes('apdayc') && normalized.includes('compart')) {
+    nextDraft.apdaycPayer = 'SHARED'
+    nextDraft.apdaycConfirmed = true
+    detected.push('APDAYC compartido')
+  }
+  if (normalized.includes('apdayc') && normalized.includes('pagado')) {
+    nextDraft.apdaycStatus = 'PAID'
+    nextDraft.apdaycConfirmed = true
+    detected.push('estado APDAYC pagado')
+  } else if (normalized.includes('apdayc') && normalized.includes('incluido')) {
+    nextDraft.apdaycStatus = 'INCLUDED'
+    nextDraft.apdaycConfirmed = true
+    detected.push('estado APDAYC incluido')
+  } else if (normalized.includes('apdayc') && normalized.includes('pendiente')) {
+    nextDraft.apdaycStatus = 'PENDING'
+    nextDraft.apdaycConfirmed = true
+    detected.push('estado APDAYC pendiente')
+  }
+  if (nextDraft.eventType && (nextDraft.clientName || nextDraft.clientId)) {
+    nextDraft.title = aiTitleFromDraft(nextDraft)
+  }
+  return { draft: nextDraft, detected, clientMatches: client?.id ? [] : clientMatches }
+}
+
+function missingAiFields(draft: AiEventDraft, packages: EventPackage[]): AiMissingField[] {
+  const missing: AiMissingField[] = []
+  const hasNewClientBasics = Boolean(draft.clientName?.trim() && draft.clientPhone?.trim())
+  if (!draft.clientId && !hasNewClientBasics) missing.push('client')
+  if (!draft.clientId && hasNewClientBasics && !validAiClientDocument(draft)) missing.push('clientDocument')
+  if (!draft.floorId) missing.push('floor')
+  if (packages.length > 0 && !draft.packageId) missing.push('package')
+  if (!draft.eventType) missing.push('eventType')
+  if (!draft.title) missing.push('title')
+  if (!draft.eventDate) missing.push('date')
+  if (!draft.startTime || !draft.endTime) missing.push('time')
+  if (!draft.contractCapacityOverride || Number(draft.contractCapacityOverride) <= 0) missing.push('capacity')
+  if (!draft.totalAmount || Number(draft.totalAmount) <= 0) missing.push('amount')
+  if (!isAiApdaycComplete(draft)) missing.push('apdayc')
+  return missing
+}
+
+function aiMissingLabel(field: AiMissingField) {
+  const labels: Record<AiMissingField, string> = {
+    client: 'cliente registrado o cliente nuevo con telefono',
+    clientDocument: 'DNI o RUC del cliente nuevo',
+    floor: 'ambiente / piso',
+    package: 'paquete',
+    eventType: 'tipo de evento',
+    title: 'titulo del evento',
+    date: 'fecha',
+    time: 'hora de inicio y fin',
+    capacity: 'capacidad contractual',
+    amount: 'monto total',
+    apdayc: 'APDAYC monto, responsable y estado',
+  }
+  return labels[field]
+}
+
+function nextAiQuestion(field?: AiMissingField) {
+  const questions: Record<AiMissingField, string> = {
+    client: '¿Qué cliente usaremos? Puedes escribir nombre, DNI, RUC, telefono o elegirlo con los botones.',
+    clientDocument: 'El cliente parece nuevo. ¿Será DNI o RUC? Envíame algo como "DNI 12345678" o "RUC 20123456789".',
+    floor: '¿En qué ambiente será: 1er piso, 2do piso o 3er/4to piso?',
+    package: '¿Qué paquete quieres usar?',
+    eventType: '¿Qué tipo de evento será?',
+    title: '¿Qué titulo quieres para el evento?',
+    date: '¿Para qué fecha lo separamos?',
+    time: '¿Cuál será el horario de inicio y fin?',
+    capacity: '¿Cuál será la capacidad contractual?',
+    amount: '¿Cuál será el monto total del evento?',
+    apdayc: 'Completemos APDAYC. Escribe algo como "APDAYC 250 cliente pendiente" o toca "No aplica".',
+  }
+  return field ? questions[field] : 'Ya tengo todo. Revisa el resumen y confirma para crear el evento.'
+}
+
+function summarizeAiDraft(draft: AiEventDraft) {
+  return [
+    `Cliente: ${draft.clientName || 'Pendiente'}`,
+    `Documento: ${draft.clientDocumentNumber ? `${draft.clientDocumentType ?? 'DNI'} ${draft.clientDocumentNumber}` : 'Pendiente'}`,
+    `Telefono: ${draft.clientPhone || 'Pendiente'}`,
+    `Ambiente: ${draft.floorName || 'Pendiente'}`,
+    `Paquete: ${draft.packageName || 'Pendiente'}`,
+    `Tipo: ${draft.eventType || 'Pendiente'}`,
+    `Fecha: ${draft.eventDate || 'Pendiente'}`,
+    `Horario: ${draft.startTime || '--:--'} - ${draft.endTime || '--:--'}`,
+    `Monto: ${draft.totalAmount ? money.format(Number(draft.totalAmount)) : 'Pendiente'}`,
+    `APDAYC: ${formatAiApdaycDraft(draft)}`,
+    `Estado APDAYC: ${draft.apdaycStatus ? apdaycStatusLabels[draft.apdaycStatus] : 'Pendiente'}`,
+    `Capacidad: ${draft.contractCapacityOverride || 'Pendiente'}`,
+  ].join('\n')
+}
+
 function AiView({
-  aiMode,
-  setAiMode,
-  aiPrompt,
-  setAiPrompt,
-  aiResult,
-  aiLoading,
-  runAi,
+  clients,
+  floors,
+  packages,
+  onCreateEvent,
 }: {
-  aiMode: AiMode
-  setAiMode: (mode: AiMode) => void
-  aiPrompt: string
-  setAiPrompt: (value: string) => void
-  aiResult: AiResponse | null
-  aiLoading: boolean
-  runAi: () => Promise<void>
+  clients: Client[]
+  floors: Floor[]
+  packages: EventPackage[]
+  onCreateEvent: (draft: AiEventDraft) => Promise<void>
 }) {
-  const modes: Array<{ id: AiMode; label: string }> = [
-    { id: 'contract', label: 'Contrato' },
-    { id: 'summary', label: 'Resumen' },
-    { id: 'marketing', label: 'Marketing' },
-    { id: 'balance', label: 'Balance' },
-  ]
+  const [draft, setDraft] = useState<AiEventDraft>(() => newAiDraft())
+  const [messages, setMessages] = useState<AiChatMessage[]>([
+    {
+      id: aiMessageId(),
+      role: 'assistant',
+      text: 'Hola, soy el asistente de reservas Areli. Dime el evento como te salga: cliente, fecha, horario, ambiente, paquete o monto. Yo iré armando el borrador y preguntaré lo que falte.',
+    },
+  ])
+  const [input, setInput] = useState('')
+  const [thinking, setThinking] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [clientMatches, setClientMatches] = useState<AiClientMatch[]>([])
+  const messagesEndRef = useRef<HTMLDivElement | null>(null)
+  const missing = missingAiFields(draft, packages)
+  const ready = missing.length === 0
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ block: 'end' })
+  }, [messages, thinking])
+
+  function pushAssistant(text: string) {
+    setMessages((current) => [...current, { id: aiMessageId(), role: 'assistant', text }])
+  }
+
+  function processMessage(rawMessage: string) {
+    const normalized = normalizeAiText(rawMessage)
+    if (normalized.includes('limpiar')) {
+      setDraft(newAiDraft())
+      setClientMatches([])
+      return 'Listo, limpié el borrador. Empecemos de nuevo: ¿qué evento quieres separar?'
+    }
+    if (normalized.includes('cliente nuevo')) {
+      setDraft((current) => ({ ...current, clientId: '' }))
+      setClientMatches([])
+      return draft.clientName
+        ? `Perfecto, crearé un cliente nuevo como "${draft.clientName}". Dime teléfono y DNI/RUC para registrarlo antes de crear el evento.`
+        : 'Perfecto, lo trataré como cliente nuevo. Dime nombre, teléfono y DNI/RUC para registrarlo antes de crear el evento.'
+    }
+    if (normalized.includes('ver resumen') || normalized.includes('resumen')) {
+      const currentMissing = missingAiFields(draft, packages)
+      return `Este es el borrador actual:\n\n${summarizeAiDraft(draft)}\n\n${currentMissing.length ? `Falta: ${currentMissing.map(aiMissingLabel).join(', ')}.` : 'Ya está listo para confirmar.'}`
+    }
+    if (normalized.includes('que falta') || normalized.includes('qué falta')) {
+      const currentMissing = missingAiFields(draft, packages)
+      return currentMissing.length
+        ? `Falta completar: ${currentMissing.map(aiMissingLabel).join(', ')}.\n\n${nextAiQuestion(currentMissing[0])}`
+        : 'No falta nada obligatorio. Revisa el resumen y presiona "Confirmar y crear evento".'
+    }
+    if (normalized.includes('crear evento') || normalized.includes('confirmar') || normalized.includes('confirmalo') || normalized.includes('confírmalo')) {
+      const currentMissing = missingAiFields(draft, packages)
+      return currentMissing.length
+        ? `Todavía no puedo crear el evento. Falta: ${currentMissing.map(aiMissingLabel).join(', ')}.\n\n${nextAiQuestion(currentMissing[0])}`
+        : `Este es el evento que voy a crear:\n\n${summarizeAiDraft(draft)}\n\nPresiona "Confirmar y crear evento" para guardarlo.`
+    }
+
+    const result = applyAiExtraction(rawMessage, draft, clients, floors, packages)
+    setDraft(result.draft)
+    setClientMatches(result.clientMatches)
+    const nextMissing = missingAiFields(result.draft, packages)
+    const detectedLine = result.detected.length ? `Detecté: ${result.detected.join(', ')}.` : 'No detecté datos nuevos con seguridad.'
+    const matchesLine =
+      result.clientMatches.length === 1
+        ? `\n\n¿Te refieres a ${result.clientMatches[0].name}? Confírmalo con el botón o registra "${result.draft.clientName || 'este nombre'}" como cliente nuevo.`
+        : result.clientMatches.length > 1
+          ? '\n\nEncontré varios clientes registrados parecidos. Elige el correcto con los botones o registra uno nuevo.'
+          : ''
+    return nextMissing.length
+      ? `${detectedLine}${matchesLine}\n\n${nextAiQuestion(nextMissing[0])}`
+      : `${detectedLine}${matchesLine}\n\nEste es el evento que voy a crear:\n\n${summarizeAiDraft(result.draft)}\n\nSi todo está correcto, presiona "Confirmar y crear evento".`
+  }
+
+  function sendMessage(message = input) {
+    const cleanMessage = message.trim()
+    if (!cleanMessage || thinking || saving) return
+    setInput('')
+    setMessages((current) => [...current, { id: aiMessageId(), role: 'user', text: cleanMessage }])
+    setThinking(true)
+    window.setTimeout(() => {
+      const answer = processMessage(cleanMessage)
+      pushAssistant(answer)
+      setThinking(false)
+    }, 360)
+  }
+
+  async function confirmCreate() {
+    if (!ready || saving) {
+      pushAssistant(`Antes de crear falta: ${missing.map(aiMissingLabel).join(', ')}.\n\n${nextAiQuestion(missing[0])}`)
+      return
+    }
+    setSaving(true)
+    try {
+      await onCreateEvent(draft)
+      pushAssistant('Evento creado correctamente. Te llevé a eventos registrados para revisarlo.')
+      setDraft(newAiDraft())
+    } catch (err) {
+      pushAssistant(err instanceof Error ? err.message : 'No se pudo crear el evento. Revisa el borrador e intenta nuevamente.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function chooseClient(match: AiClientMatch) {
+    setDraft((current) => ({
+      ...current,
+      clientId: match.id,
+      clientName: match.name,
+      clientPhone: match.phone || current.clientPhone,
+      clientDocumentType: match.documentType || current.clientDocumentType,
+      clientDocumentNumber: match.documentNumber || current.clientDocumentNumber,
+      title: current.eventType ? aiTitleFromDraft({ ...current, clientName: match.name }) : current.title,
+    }))
+    setClientMatches([])
+    pushAssistant(`Listo, usaré el cliente registrado: ${match.name}.`)
+  }
+
+  function chooseFloor(floor: Floor) {
+    setDraft((current) => ({ ...current, floorId: floor.id, floorName: floor.name }))
+    pushAssistant(`Ambiente seleccionado: ${floor.name}.`)
+  }
+
+  function choosePackage(eventPackage: EventPackage) {
+    setDraft((current) => ({
+      ...current,
+      packageId: eventPackage.id,
+      packageName: eventPackage.name,
+      totalAmount: current.totalAmount && Number(current.totalAmount) > 0 ? current.totalAmount : Number(eventPackage.basePrice ?? 0),
+      contractCapacityOverride:
+        current.contractCapacityOverride && Number(current.contractCapacityOverride) > 0
+          ? current.contractCapacityOverride
+          : Number(eventPackage.includedCapacity ?? 0),
+    }))
+    pushAssistant(`Paquete seleccionado: ${eventPackage.name}.`)
+  }
+
+  function chooseNewClientDocumentType(documentType: DocumentType) {
+    setDraft((current) => ({ ...current, clientId: '', clientDocumentType: documentType, clientDocumentNumber: '' }))
+    setClientMatches([])
+    pushAssistant(`Usaremos ${documentType}. Envíame el número ${documentType === 'RUC' ? 'de 11 dígitos' : 'de 8 dígitos'}.`)
+  }
+
+  function chooseApdaycNoAplica() {
+    setDraft((current) => ({
+      ...current,
+      apdaycAmount: 0,
+      apdaycPayer: 'CLIENT',
+      apdaycStatus: 'NOT_APPLIES',
+      apdaycConfirmed: true,
+    }))
+    pushAssistant('Listo, APDAYC marcado como no aplica.')
+  }
+
+  function chooseApdaycPayer(payer: ApdaycPayer) {
+    setDraft((current) => ({
+      ...current,
+      apdaycPayer: payer,
+      apdaycConfirmed: true,
+    }))
+    pushAssistant(`APDAYC lo asume: ${apdaycPayerLabels[payer]}. Falta el monto y estado si todavía no los diste.`)
+  }
+
+  function chooseApdaycStatus(status: ApdaycStatus) {
+    setDraft((current) => ({
+      ...current,
+      apdaycStatus: status,
+      apdaycAmount: status === 'NOT_APPLIES' ? 0 : current.apdaycAmount,
+      apdaycPayer: status === 'NOT_APPLIES' ? 'CLIENT' : current.apdaycPayer,
+      apdaycConfirmed: true,
+    }))
+    pushAssistant(status === 'NOT_APPLIES' ? 'Listo, APDAYC marcado como no aplica.' : `Estado APDAYC: ${apdaycStatusLabels[status]}.`)
+  }
+
+  const draftRows = [
+    ['Cliente', draft.clientName || (draft.clientId ? 'Cliente seleccionado' : '')],
+    ['Documento', draft.clientDocumentNumber ? `${draft.clientDocumentType ?? 'DNI'} ${draft.clientDocumentNumber}` : ''],
+    ['Telefono', draft.clientPhone],
+    ['Ambiente', draft.floorName],
+    ['Paquete', draft.packageName],
+    ['Titulo', draft.title],
+    ['Tipo', draft.eventType],
+    ['Fecha', draft.eventDate],
+    ['Horario', draft.startTime && draft.endTime ? `${draft.startTime} - ${draft.endTime}` : ''],
+    ['Estado', draft.status ? eventStatusLabels[draft.status] : ''],
+    ['Monto total', draft.totalAmount ? money.format(Number(draft.totalAmount)) : ''],
+    ['APDAYC', formatAiApdaycDraft(draft)],
+    ['Estado APDAYC', draft.apdaycStatus ? apdaycStatusLabels[draft.apdaycStatus] : ''],
+    ['Capacidad', draft.contractCapacityOverride],
+    ['Notas', draft.notes],
+  ] as const
+  const shouldAskNewClientDocument = Boolean(!draft.clientId && draft.clientName?.trim() && draft.clientPhone?.trim() && !validAiClientDocument(draft))
+  const showFloorButtons = !draft.floorId && floors.length > 0
+  const showPackageButtons = !draft.packageId && packages.length > 0
+  const showApdaycButtons = !isAiApdaycComplete(draft)
 
   return (
-    <section className="grid two ai-layout">
-      <div className="panel">
-        <h2>Asistente IA</h2>
-        <div className="tabs">
-          {modes.map((mode) => (
-            <button
-              className={`tab ${aiMode === mode.id ? 'active' : ''}`}
-              key={mode.id}
-              onClick={() => setAiMode(mode.id)}
-              type="button"
-            >
-              {mode.label}
+    <section className="ai-chat-layout">
+      <div className="panel ai-chat-panel">
+        <header className="ai-chat-head">
+          <div>
+            <p className="eyebrow">Asistente conversacional</p>
+            <h2>Crear evento con IA</h2>
+          </div>
+          <span className={`ai-ready-pill ${ready ? 'ready' : ''}`}>{ready ? 'Listo para confirmar' : `${missing.length} datos faltantes`}</span>
+        </header>
+
+        <div className="ai-chat-messages">
+          {messages.map((message) => (
+            <div className={`ai-message ${message.role}`} key={message.id}>
+              {message.role === 'assistant' && (
+                <span className="ai-avatar">
+                  <Bot size={16} />
+                </span>
+              )}
+              <p>{message.text}</p>
+            </div>
+          ))}
+          {thinking && (
+            <div className="ai-message assistant">
+              <span className="ai-avatar">
+                <Bot size={16} />
+              </span>
+              <p className="ai-thinking">Pensando...</p>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {(clientMatches.length > 0 || shouldAskNewClientDocument || showFloorButtons || showPackageButtons || showApdaycButtons) && (
+          <div className="ai-context-actions">
+            {clientMatches.length > 0 && (
+              <div className="ai-action-group">
+                <span>Clientes encontrados</span>
+                <div>
+                  {clientMatches.map((match) => (
+                    <button className="btn ghost" key={match.id} onClick={() => chooseClient(match)} type="button">
+                      {match.name}
+                      <small>{match.detail}</small>
+                    </button>
+                  ))}
+                  {draft.clientName && (
+                    <button className="btn ghost" onClick={() => sendMessage('cliente nuevo')} type="button">
+                      Registrar como nuevo
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {shouldAskNewClientDocument && (
+              <div className="ai-action-group">
+                <span>Documento del cliente nuevo</span>
+                <div>
+                  <button className="btn ghost" onClick={() => chooseNewClientDocumentType('DNI')} type="button">
+                    Usar DNI
+                  </button>
+                  <button className="btn ghost" onClick={() => chooseNewClientDocumentType('RUC')} type="button">
+                    Usar RUC
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {showFloorButtons && (
+              <div className="ai-action-group">
+                <span>Ambiente</span>
+                <div>
+                  {floors.map((floor) => (
+                    <button className="btn ghost" key={floor.id} onClick={() => chooseFloor(floor)} type="button">
+                      {floor.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {showPackageButtons && (
+              <div className="ai-action-group">
+                <span>Paquete</span>
+                <div>
+                  {packages.slice(0, 6).map((eventPackage) => (
+                    <button className="btn ghost" key={eventPackage.id} onClick={() => choosePackage(eventPackage)} type="button">
+                      {eventPackage.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {showApdaycButtons && (
+              <div className="ai-action-group">
+                <span>APDAYC obligatorio</span>
+                <div>
+                  <button className="btn ghost" onClick={chooseApdaycNoAplica} type="button">
+                    No aplica
+                  </button>
+                  <button className="btn ghost" onClick={() => chooseApdaycPayer('CLIENT')} type="button">
+                    Lo paga cliente
+                  </button>
+                  <button className="btn ghost" onClick={() => chooseApdaycPayer('ARELI')} type="button">
+                    Lo paga Areli
+                  </button>
+                  <button className="btn ghost" onClick={() => chooseApdaycPayer('SHARED')} type="button">
+                    Compartido
+                  </button>
+                  <button className="btn ghost" onClick={() => chooseApdaycStatus('PENDING')} type="button">
+                    Pendiente
+                  </button>
+                  <button className="btn ghost" onClick={() => chooseApdaycStatus('INCLUDED')} type="button">
+                    Incluido
+                  </button>
+                  <button className="btn ghost" onClick={() => chooseApdaycStatus('PAID')} type="button">
+                    Pagado
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="ai-quick-actions">
+          {['qué falta', 'ver resumen', 'cliente nuevo', 'limpiar borrador'].map((command) => (
+            <button className="btn ghost" key={command} onClick={() => sendMessage(command)} type="button">
+              {command}
             </button>
           ))}
         </div>
-        <label>
-          Contexto
-          <textarea value={aiPrompt} onChange={(event) => setAiPrompt(event.target.value)} />
-        </label>
-        <div className="form-actions">
-          <button className="btn primary" disabled={aiLoading} onClick={runAi} type="button">
-            <Sparkles size={17} />
-            {aiLoading ? 'Procesando...' : 'Generar'}
+
+        <form className="ai-chat-composer" onSubmit={(event) => { event.preventDefault(); sendMessage() }}>
+          <input
+            placeholder="Ej: Separa un matrimonio para Juan Perez el 20 de julio de 7pm a 2am en segundo piso..."
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+          />
+          <button className="btn primary" disabled={thinking || saving || !input.trim()} type="submit">
+            <Sparkles size={16} />
+            Enviar
+          </button>
+        </form>
+      </div>
+
+      <aside className="panel ai-draft-panel">
+        <div className="ai-draft-head">
+          <div>
+            <p className="eyebrow">Borrador del evento</p>
+            <h2>Reserva pendiente</h2>
+          </div>
+          <button className="btn primary" disabled={!ready || saving} onClick={() => void confirmCreate()} type="button">
+            <Save size={16} />
+            {saving ? 'Creando...' : 'Confirmar y crear evento'}
           </button>
         </div>
-      </div>
-      <div className="panel">
-        <h2>Resultado</h2>
-        <div className="ai-output">
-          {aiResult?.result ??
-            'La IA está conectada al backend. Si AI_ENABLED=false, el sistema responderá con aviso de configuración.'}
+
+        <div className="ai-missing-box">
+          <strong>{ready ? 'Borrador completo' : 'Falta completar'}</strong>
+          <p>{ready ? 'Revisa los datos y confirma para guardar.' : missing.map(aiMissingLabel).join(', ')}</p>
         </div>
-      </div>
+
+        <div className="ai-draft-list">
+          {draftRows.map(([label, value]) => (
+            <article className={value ? 'filled' : ''} key={label}>
+              <span>{label}</span>
+              <strong>{formatAiDraftValue(value)}</strong>
+            </article>
+          ))}
+        </div>
+      </aside>
     </section>
   )
 }
