@@ -58,6 +58,8 @@ public class PackageController {
         eventPackage.setEventType(cleanOptional(request.eventType()));
         eventPackage.setBasePrice(request.basePrice() == null ? BigDecimal.ZERO : request.basePrice());
         eventPackage.setIncludedCapacity(request.includedCapacity());
+        eventPackage.setDepositAmount(request.depositAmount());
+        eventPackage.setDepositPercent(request.depositPercent());
         eventPackage.setGuaranteeAmount(request.guaranteeAmount() == null ? BigDecimal.ZERO : request.guaranteeAmount());
         eventPackage.setIncludedServices(cleanOptional(request.includedServices()));
         eventPackage.setTerms(cleanOptional(request.terms()));

@@ -4,6 +4,7 @@ import com.areli.api.service.ClientPaymentService;
 import com.areli.api.service.EventService;
 import com.areli.api.web.dto.ApiDtos.ClientPaymentRequest;
 import com.areli.api.web.dto.ApiDtos.ClientPaymentResponse;
+import com.areli.api.web.dto.ApiDtos.UpdateClientPaymentRequest;
 import com.areli.api.web.dto.ApiDtos.ContractPreviewResponse;
 import com.areli.api.web.dto.ApiDtos.EventResponse;
 import com.areli.api.web.dto.ApiDtos.RescheduleOptionsResponse;
@@ -16,6 +17,7 @@ import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -81,6 +83,14 @@ public class EventController {
     @ResponseStatus(HttpStatus.CREATED)
     public ClientPaymentResponse createPayment(@PathVariable UUID id, @RequestBody @Valid ClientPaymentRequest request) {
         return ClientPaymentResponse.from(clientPaymentService.create(id, request));
+    }
+
+    @PatchMapping("/{id}/payments/{paymentId}")
+    public ClientPaymentResponse updatePayment(
+            @PathVariable UUID id,
+            @PathVariable UUID paymentId,
+            @RequestBody @Valid UpdateClientPaymentRequest request) {
+        return ClientPaymentResponse.from(clientPaymentService.update(id, paymentId, request));
     }
 
     @GetMapping("/{id}/reschedule-options")

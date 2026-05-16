@@ -4,6 +4,7 @@ import type {
   ClientLookupResponse,
   ClientPayment,
   ClientPaymentPayload,
+  UpdateClientPaymentPayload,
   ClientPayload,
   AppSettings,
   ContractPreview,
@@ -40,8 +41,9 @@ function resolveApiBaseUrl(): string {
 const API_BASE_URL = resolveApiBaseUrl()
 
 function cleanEventPayload(payload: EventPayload): EventPayload {
+  const { status: _status, ...rest } = payload
   return {
-    ...payload,
+    ...rest,
     packageId: payload.packageId || undefined,
     apdaycNotes: payload.apdaycNotes || undefined,
     notes: payload.notes || undefined,
@@ -130,6 +132,11 @@ export const api = {
   eventPayments: (eventId: string) => request<ClientPayment[]>(`/events/${eventId}/payments`),
   createEventPayment: (eventId: string, payload: ClientPaymentPayload) =>
     request<ClientPayment>(`/events/${eventId}/payments`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateEventPayment: (eventId: string, paymentId: string, payload: UpdateClientPaymentPayload) =>
+    request<ClientPayment>(`/events/${eventId}/payments/${paymentId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
   eventStaffAvailability: (eventId: string, roleKey: string) =>
     request<StaffAvailability[]>(
       `/events/${eventId}/staff-assignments/availability?roleKey=${encodeURIComponent(roleKey)}`,
@@ -151,7 +158,6 @@ export const api = {
       eventDate: string
       startTime: string
       endTime: string
-      status: EventPayload['status']
       totalAmount: number
       apdaycAmount: number
       contractCapacityOverride?: number

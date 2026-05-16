@@ -8,6 +8,7 @@ export type EventStatus =
 export type CancellationType = 'CLIENT_REQUEST' | 'FORCE_MAJEURE' | 'NO_SHOW' | 'RESCHEDULE_REQUEST_REJECTED'
 export type CancellationPaymentStatus = 'ADELANTO_RETENIDO' | 'DEVOLUCION_PARCIAL' | 'DEVOLUCION_TOTAL' | 'SIN_ADELANTO'
 export type PaymentType = 'EVENT_PAYMENT' | 'APDAYC' | 'GUARANTEE'
+export type PaymentMethod = 'BCP' | 'BBVA' | 'Scotiabank' | 'Continental' | 'Efectivo'
 export type DocumentType = 'DNI' | 'RUC'
 
 export type ApdaycPayer = 'CLIENT' | 'ARELI' | 'SHARED'
@@ -62,6 +63,8 @@ export type EventPackage = {
   eventType?: string
   basePrice: number
   includedCapacity?: number
+  depositAmount?: number
+  depositPercent?: number
   guaranteeAmount?: number
   includedServices?: string
   terms?: string
@@ -115,9 +118,10 @@ export type ClientPayment = {
   paymentDate: string
   concept: string
   amount: number
-  method: string
+  method: PaymentMethod | string
   paymentType: PaymentType
   countsTowardsEventTotal: boolean
+  operationNumber?: string
   internalReceiptNumber?: string
   notes?: string
   createdAt?: string
@@ -127,10 +131,36 @@ export type ClientPaymentPayload = {
   paymentDate: string
   concept: string
   amount: number
-  method: string
+  method: PaymentMethod
   paymentType?: PaymentType
+  operationNumber?: string
   internalReceiptNumber?: string
   notes?: string
+}
+
+export type UpdateClientPaymentPayload = {
+  operationNumber?: string
+  internalReceiptNumber?: string
+  notes?: string
+}
+
+/** Datos para generar el comprobante interno PDF de un pago. */
+export type PaymentVoucherContext = {
+  payment: ClientPayment
+  eventCode: string
+  clientName: string
+  clientDocument?: string
+  clientPhone?: string
+  eventTitle: string
+  floorName: string
+  eventDate: string
+  startTime: string
+  endTime: string
+  totalAmount: number
+  paidToDate: number
+  balanceAfter: number
+  apdaycPayer?: ApdaycPayer
+  apdaycStatus?: ApdaycStatus
 }
 
 export type ContractPreview = {
@@ -139,6 +169,9 @@ export type ContractPreview = {
   clientDocument?: string
   clientPhone?: string
   clientAddress?: string
+  clientProvince?: string
+  clientDistrict?: string
+  clientStreet?: string
   floorName: string
   packageName: string
   title: string
@@ -266,6 +299,8 @@ export type EventPackagePayload = {
   eventType?: string
   basePrice: number
   includedCapacity?: number
+  depositAmount?: number
+  depositPercent?: number
   guaranteeAmount?: number
   includedServices?: string
   terms?: string
@@ -389,7 +424,7 @@ export type EventPayload = {
   eventDate: string
   startTime: string
   endTime: string
-  status: EventStatus
+  status?: EventStatus
   totalAmount: number
   apdaycAmount: number
   apdaycPayer: ApdaycPayer

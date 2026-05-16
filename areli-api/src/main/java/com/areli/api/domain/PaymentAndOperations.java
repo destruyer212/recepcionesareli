@@ -48,6 +48,9 @@ public final class PaymentAndOperations {
 
         private String internalReceiptNumber;
 
+        @Column(name = "operation_number", length = 80)
+        private String operationNumber;
+
         @Column(columnDefinition = "text")
         private String notes;
 
@@ -113,6 +116,14 @@ public final class PaymentAndOperations {
 
         public void setInternalReceiptNumber(String internalReceiptNumber) {
             this.internalReceiptNumber = internalReceiptNumber;
+        }
+
+        public String getOperationNumber() {
+            return operationNumber;
+        }
+
+        public void setOperationNumber(String operationNumber) {
+            this.operationNumber = operationNumber;
         }
 
         public String getNotes() {

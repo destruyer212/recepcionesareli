@@ -35,7 +35,7 @@ import {
   X,
 } from 'lucide-react'
 import { api } from './api'
-import { downloadEventContractPdf } from './pdf'
+import { downloadEventContractPdf, downloadPaymentVoucherPdf, prepareContractPreviewForPdf } from './pdf'
 import { WorkersView } from './components/Workers/WorkersView'
 import type {
   Client,
@@ -67,6 +67,7 @@ import type {
   StaffAvailability,
   AppSettings,
   PaymentType,
+  PaymentMethod,
 } from './types'
 import 'react-datepicker/dist/react-datepicker.css'
 import './App.css'
@@ -102,7 +103,21 @@ type FancySelectOption = {
 }
 
 const HOUR_OPTIONS = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, '0'))
+const HOUR_OPTIONS_WITH_MIDNIGHT = [...HOUR_OPTIONS, '24']
 const MINUTE_OPTIONS = Array.from({ length: 12 }, (_, index) => String(index * 5).padStart(2, '0'))
+
+/** 24:00 en pantalla = medianoche (00:00) para el API Java LocalTime. */
+function apiTimeFromPicker(value: string) {
+  return value === '24:00' ? '00:00' : value
+}
+
+function pickerEndTimeFromApi(startTime: string, endTime: string) {
+  const normalized = shortTime(endTime)
+  if (normalized !== '00:00') return normalized
+  const [sh, sm] = startTime.split(':').map(Number)
+  if ((sh || 0) * 60 + (sm || 0) > 0) return '24:00'
+  return normalized
+}
 
 function parseYmdDate(value: string): Date | null {
   if (!value) return null
@@ -568,14 +583,26 @@ function TimePickerField({
   value,
   onChange,
   required,
+  allowHour24 = false,
 }: {
   value: string
   onChange: (value: string) => void
   required?: boolean
+  /** Permite 24:00 (medianoche) — usar en hora de fin del evento. */
+  allowHour24?: boolean
 }) {
   const [isOpen, setIsOpen] = useState(false)
   const wrapperRef = useRef<HTMLDivElement | null>(null)
   const [hour = '', minute = ''] = value.split(':')
+  const hourOptions = allowHour24 ? HOUR_OPTIONS_WITH_MIDNIGHT : HOUR_OPTIONS
+  const minuteOptions = hour === '24' ? ['00'] : MINUTE_OPTIONS
+  const hourListRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!isOpen || !hourListRef.current) return
+    const active = hourListRef.current.querySelector<HTMLElement>('.time-picker-option.active')
+    active?.scrollIntoView({ block: 'nearest' })
+  }, [isOpen, hour])
 
   useEffect(() => {
     function handleOutsideClick(event: MouseEvent) {
@@ -596,7 +623,7 @@ function TimePickerField({
   }, [])
 
   function setHour(nextHour: string) {
-    const nextMinute = minute || '00'
+    const nextMinute = nextHour === '24' ? '00' : minute || '00'
     onChange(`${nextHour}:${nextMinute}`)
   }
 
@@ -616,7 +643,12 @@ function TimePickerField({
         type="text"
         value={value}
       />
-      <button className="time-picker-trigger" onClick={() => setIsOpen((current) => !current)} type="button">
+      <button
+        className="time-picker-trigger"
+        onClick={() => setIsOpen((current) => !current)}
+        type="button"
+        aria-expanded={isOpen}
+      >
         <span>{value || '--:--'}</span>
         <Clock size={16} />
       </button>
@@ -626,8 +658,8 @@ function TimePickerField({
           <div className="time-picker-columns">
             <div className="time-picker-column">
               <small>Hora</small>
-              <div className="time-picker-list">
-                {HOUR_OPTIONS.map((option) => (
+              <div className="time-picker-list" ref={hourListRef}>
+                {hourOptions.map((option) => (
                   <button
                     className={`time-picker-option ${hour === option ? 'active' : ''}`}
                     key={option}
@@ -642,7 +674,7 @@ function TimePickerField({
             <div className="time-picker-column">
               <small>Min</small>
               <div className="time-picker-list">
-                {MINUTE_OPTIONS.map((option) => (
+                {minuteOptions.map((option) => (
                   <button
                     className={`time-picker-option ${minute === option ? 'active' : ''}`}
                     key={option}
@@ -690,7 +722,6 @@ const emptyEvent: EventPayload = {
   eventDate: new Date().toISOString().slice(0, 10),
   startTime: '18:00',
   endTime: '23:00',
-  status: 'INQUIRY',
   totalAmount: 0,
   apdaycAmount: 0,
   apdaycPayer: 'CLIENT',
@@ -698,6 +729,31 @@ const emptyEvent: EventPayload = {
   contractCapacityOverride: 0,
   apdaycNotes: '',
   notes: '',
+}
+
+function roundMoney(value: number) {
+  return Math.round(value * 100) / 100
+}
+
+function suggestAdvanceFromPackage(eventPackage: EventPackage | undefined, totalAmount: number) {
+  if (!eventPackage) return 0
+  const fixed = Number(eventPackage.depositAmount ?? 0)
+  if (fixed > 0) return roundMoney(fixed)
+  const percent = Number(eventPackage.depositPercent ?? 0)
+  const total = Number(totalAmount ?? 0)
+  if (percent > 0 && total > 0) return roundMoney((total * percent) / 100)
+  return 0
+}
+
+function advanceHintFromPackage(eventPackage: EventPackage | undefined, totalAmount: number) {
+  if (!eventPackage) return 'Selecciona un paquete para sugerir el adelanto.'
+  const fixed = Number(eventPackage.depositAmount ?? 0)
+  if (fixed > 0) return `Según paquete: monto fijo de ${money.format(fixed)}.`
+  const percent = Number(eventPackage.depositPercent ?? 0)
+  if (percent > 0) {
+    return `Según paquete: ${percent}% del total (${money.format(suggestAdvanceFromPackage(eventPackage, totalAmount))}).`
+  }
+  return 'Este paquete no define adelanto; ingrésalo manualmente si aplica.'
 }
 
 const emptyInventoryItem: InventoryPayload = {
@@ -940,7 +996,7 @@ function durationLabel(startTime: string, endTime: string) {
   const [startHour, startMinute] = startTime.split(':').map(Number)
   const [endHour, endMinute] = endTime.split(':').map(Number)
   const start = startHour * 60 + startMinute
-  let end = endHour * 60 + endMinute
+  let end = (endTime === '24:00' ? 24 : endHour) * 60 + endMinute
   if (end <= start) {
     end += 24 * 60
   }
@@ -962,13 +1018,6 @@ const eventStatusLabels: Record<EventStatus, string> = {
   CANCELLED: 'Cancelado',
 }
 
-const eventStatusOptions: Array<{ value: EventStatus; label: string }> = [
-  { value: 'INQUIRY', label: 'Consulta' },
-  { value: 'SEPARATED', label: 'Separado' },
-  { value: 'CONTRACTED', label: 'Contratado' },
-  { value: 'CANCELLED', label: 'Cancelado' },
-]
-
 const cancellationPaymentStatusLabels: Record<CancellationPaymentStatus, string> = {
   ADELANTO_RETENIDO: 'Adelanto retenido',
   DEVOLUCION_PARCIAL: 'Devolución parcial',
@@ -987,6 +1036,50 @@ const paymentTypeOptions: Array<{ value: PaymentType; label: string }> = [
   { value: 'APDAYC', label: 'APDAYC (no suma como ingreso)' },
   { value: 'GUARANTEE', label: 'Garantía (devolvible, no ingreso)' },
 ]
+
+const paymentMethodOptions: Array<{ value: PaymentMethod; label: string }> = [
+  { value: 'BCP', label: 'BCP' },
+  { value: 'BBVA', label: 'BBVA' },
+  { value: 'Scotiabank', label: 'Scotiabank' },
+  { value: 'Continental', label: 'Continental' },
+  { value: 'Efectivo', label: 'Efectivo' },
+]
+
+function paymentMethodRequiresOperationNumber(method: string) {
+  return method === 'BCP' || method === 'BBVA' || method === 'Scotiabank'
+}
+
+function paymentOperationNumber(row: ClientPayment) {
+  const direct = row.operationNumber?.trim()
+  if (direct) return direct
+  const legacy = (row as { operation_number?: string }).operation_number?.trim()
+  return legacy || undefined
+}
+
+function formatPaymentMethodLine(row: ClientPayment) {
+  return String(row.method ?? '')
+}
+
+function paymentVoucherTotals(rows: ClientPayment[], currentId: string, eventTotal: number) {
+  const sorted = [...rows].sort((a, b) => {
+    const keyA = `${a.paymentDate}${a.createdAt ?? a.id}`
+    const keyB = `${b.paymentDate}${b.createdAt ?? b.id}`
+    return keyA.localeCompare(keyB)
+  })
+  let paidToDate = 0
+  for (const row of sorted) {
+    if (row.countsTowardsEventTotal && row.paymentType === 'EVENT_PAYMENT') {
+      paidToDate += Number(row.amount ?? 0)
+    }
+    if (row.id === currentId) {
+      break
+    }
+  }
+  return {
+    paidToDate,
+    balanceAfter: Math.max(0, eventTotal - paidToDate),
+  }
+}
 
 const cancellationPaymentOptions: Array<{ value: CancellationPaymentStatus; label: string }> = [
   { value: 'SIN_ADELANTO', label: 'Cancelado sin adelanto' },
@@ -1127,6 +1220,18 @@ function contractualContactNumber(client: Client | undefined): string {
   return client.phone?.trim() ?? ''
 }
 
+function documentLabelFromNumber(number?: string, documentType?: DocumentType): string | undefined {
+  const digits = (number ?? '').replace(/\D/g, '')
+  if (!digits) return undefined
+  const type =
+    documentType === 'RUC' ? 'RUC' : documentType === 'DNI' ? 'DNI' : digits.length === 11 ? 'RUC' : 'DNI'
+  return `${type} ${digits}`
+}
+
+function clientDocumentLabel(client: Client | undefined): string | undefined {
+  return documentLabelFromNumber(client?.documentNumber, client?.documentType)
+}
+
 function App() {
   const [view, setView] = useState<View>(() => {
     if (typeof window === 'undefined') {
@@ -1165,10 +1270,12 @@ function App() {
   const [peruLocations, setPeruLocations] = useState<PeruLocations>({ provinces: [], districts: [] })
   const [clientForm, setClientForm] = useState<ClientPayload>(emptyClient)
   const [eventForm, setEventForm] = useState<EventPayload>(emptyEvent)
+  const [eventAdvanceAmount, setEventAdvanceAmount] = useState(0)
   const [inventoryForm, setInventoryForm] = useState<InventoryPayload>(emptyInventoryItem)
   const [editingEvent, setEditingEvent] = useState<EventItem | null>(null)
   const [editEventForm, setEditEventForm] = useState<EventPayload | null>(null)
   const [editBusy, setEditBusy] = useState(false)
+  const editEventModal = useMobileModalBehavior(Boolean(editingEvent))
   const activePackages = useMemo(() => packages.filter((item) => item.active !== false), [packages])
   const selectedPackage = useMemo(
     () => activePackages.find((item) => item.id === eventForm.packageId),
@@ -1363,14 +1470,33 @@ function App() {
         return
       }
 
-      await api.createEvent({
+      const created = await api.createEvent({
         ...eventForm,
         packageId: eventForm.packageId || undefined,
         totalAmount: Number(eventForm.totalAmount),
         contractCapacityOverride: Number(eventForm.contractCapacityOverride),
+        startTime: apiTimeFromPicker(eventForm.startTime),
+        endTime: apiTimeFromPicker(eventForm.endTime),
       })
+      const advance = roundMoney(Number(eventAdvanceAmount || 0))
+      if (advance > 0) {
+        await api.createEventPayment(created.id, {
+          paymentDate: new Date().toISOString().slice(0, 10),
+          concept: 'Adelanto',
+          amount: advance,
+          method: 'Efectivo',
+          paymentType: 'EVENT_PAYMENT',
+        })
+        setMessage(
+          advance >= Number(created.totalAmount ?? 0)
+            ? 'Evento registrado y pagado al total. Estado: Contratado.'
+            : 'Evento registrado con adelanto. Estado: Separado (ambiente reservado).',
+        )
+      } else {
+        setMessage('Evento registrado en consulta. Registra el adelanto en Pagos para reservar el ambiente.')
+      }
       setEventForm((current) => ({ ...emptyEvent, clientId: current.clientId, floorId: current.floorId }))
-      setMessage('Evento separado correctamente.')
+      setEventAdvanceAmount(0)
       await loadData()
       setView('eventsRegistered')
     } catch (err) {
@@ -1437,7 +1563,6 @@ function App() {
       eventDate: draft.eventDate,
       startTime: draft.startTime,
       endTime: draft.endTime,
-      status: draft.status ?? 'INQUIRY',
       totalAmount: Number(draft.totalAmount),
       apdaycAmount: Number(draft.apdaycAmount ?? 0),
       apdaycPayer: draft.apdaycPayer ?? 'CLIENT',
@@ -1479,16 +1604,23 @@ function App() {
     }
   }
 
+  function closeEditingEvent() {
+    if (editBusy) return
+    setEditingEvent(null)
+    setEditEventForm(null)
+  }
+
   async function startEditingEvent(event: EventItem) {
     setError('')
     setMessage('')
+    setEditingEvent(event)
+    setEditEventForm(null)
     setEditBusy(true)
     try {
       const preview = await api.contractPreview(event.id)
       const clientId = clients.find((item) => item.fullName === event.clientName)?.id ?? ''
       const floorId = floors.find((item) => item.name === event.floorName)?.id ?? ''
       const packageId = packages.find((item) => item.name === (event.packageName ?? ''))?.id ?? ''
-      setEditingEvent(event)
       setEditEventForm({
         clientId,
         floorId,
@@ -1497,8 +1629,7 @@ function App() {
         eventType: event.eventType,
         eventDate: event.eventDate,
         startTime: shortTime(event.startTime),
-        endTime: shortTime(event.endTime),
-        status: event.status,
+        endTime: pickerEndTimeFromApi(shortTime(event.startTime), event.endTime),
         totalAmount: Number(event.totalAmount),
         apdaycAmount: Number(event.apdaycAmount ?? 0),
         apdaycPayer: event.apdaycPayer,
@@ -1508,6 +1639,8 @@ function App() {
         notes: preview.eventNotes ?? '',
       })
     } catch (err) {
+      setEditingEvent(null)
+      setEditEventForm(null)
       setError(err instanceof Error ? err.message : 'No se pudo cargar el evento para edición.')
     } finally {
       setEditBusy(false)
@@ -1529,9 +1662,8 @@ function App() {
         title: editEventForm.title,
         eventType: editEventForm.eventType,
         eventDate: editEventForm.eventDate,
-        startTime: editEventForm.startTime,
-        endTime: editEventForm.endTime,
-        status: editEventForm.status,
+        startTime: apiTimeFromPicker(editEventForm.startTime),
+        endTime: apiTimeFromPicker(editEventForm.endTime),
         totalAmount: Number(editEventForm.totalAmount),
         apdaycAmount: Number(editEventForm.apdaycAmount),
         apdaycPayer: editEventForm.apdaycPayer,
@@ -1708,7 +1840,7 @@ function App() {
         )}
         {loading && <p className="empty">Cargando datos desde el servidor…</p>}
 
-        {!loading && view === 'dashboard' && <Dashboard summary={summary} events={events} />}
+        {!loading && view === 'dashboard' && <Dashboard summary={summary} events={events} clients={clients} />}
         {!loading && view === 'events' && (
           <EventsView
             clients={clients}
@@ -1717,6 +1849,8 @@ function App() {
             peruLocations={peruLocations}
             selectedPackage={selectedPackage}
             eventForm={eventForm}
+            advanceAmount={eventAdvanceAmount}
+            updateAdvanceAmount={setEventAdvanceAmount}
             updateEvent={updateEvent}
             submitEvent={submitEvent}
             createQuickClient={createClientQuick}
@@ -1729,118 +1863,12 @@ function App() {
           <section className="grid">
             <div className="panel">
               <h2>Eventos registrados</h2>
-              {editingEvent && editEventForm && (
-                <div className="event-edit-box">
-                  <h3>Editando: {editingEvent.title}</h3>
-                  <form onSubmit={saveEditedEvent}>
-                    <div className="form-grid">
-                      <label>
-                        Título
-                        <input value={editEventForm.title} onChange={(e) => updateEditEvent('title', e.target.value)} required />
-                      </label>
-                      <label>
-                        Tipo
-                        <input value={editEventForm.eventType} onChange={(e) => updateEditEvent('eventType', e.target.value)} required />
-                      </label>
-                      <label>
-                        Fecha
-                        <DatePicker
-                          calendarClassName="fancy-datepicker"
-                          className="fancy-date-input"
-                          dateFormat="dd/MM/yyyy"
-                          locale="es"
-                          onChange={(date: Date | null) => updateEditEvent('eventDate', formatYmdDate(date))}
-                          placeholderText="Seleccionar fecha"
-                          required
-                          selected={parseYmdDate(editEventForm.eventDate)}
-                        />
-                      </label>
-                      <label>
-                        Estado
-                        <FancySelect
-                          value={editEventForm.status}
-                          onChange={(nextValue) => updateEditEvent('status', nextValue as EventStatus)}
-                          options={eventStatusOptions}
-                        />
-                      </label>
-                      <label>
-                        Inicio
-                        <TimePickerField required value={editEventForm.startTime} onChange={(nextValue) => updateEditEvent('startTime', nextValue)} />
-                      </label>
-                      <label>
-                        Fin
-                        <TimePickerField required value={editEventForm.endTime} onChange={(nextValue) => updateEditEvent('endTime', nextValue)} />
-                      </label>
-                      <label>
-                        Monto total
-                        <input
-                          min="0"
-                          step="0.01"
-                          type="number"
-                          value={editEventForm.totalAmount}
-                          onChange={(e) => updateEditEvent('totalAmount', Number(e.target.value))}
-                          required
-                        />
-                      </label>
-                      <label>
-                        Pago APDAYC
-                        <input
-                          min="0"
-                          step="0.01"
-                          type="number"
-                          value={editEventForm.apdaycAmount}
-                          onChange={(e) => updateEditEvent('apdaycAmount', Number(e.target.value))}
-                        />
-                      </label>
-                      <label>
-                        Capacidad contractual
-                        <input
-                          min="1"
-                          step="1"
-                          type="number"
-                          value={editEventForm.contractCapacityOverride}
-                          onChange={(e) => updateEditEvent('contractCapacityOverride', Number(e.target.value))}
-                          required
-                        />
-                      </label>
-                      <label>
-                        Asume APDAYC
-                        <FancySelect
-                          value={editEventForm.apdaycPayer}
-                          onChange={(nextValue) => updateEditEvent('apdaycPayer', nextValue as ApdaycPayer)}
-                          options={Object.entries(apdaycPayerLabels).map(([value, label]) => ({ value, label }))}
-                        />
-                      </label>
-                      <label>
-                        Estado APDAYC
-                        <FancySelect
-                          value={editEventForm.apdaycStatus}
-                          onChange={(nextValue) => updateEditEvent('apdaycStatus', nextValue as ApdaycStatus)}
-                          options={Object.entries(apdaycStatusLabels).map(([value, label]) => ({ value, label }))}
-                        />
-                      </label>
-                      <label className="full">
-                        Nota APDAYC
-                        <textarea value={editEventForm.apdaycNotes} onChange={(e) => updateEditEvent('apdaycNotes', e.target.value)} />
-                      </label>
-                      <label className="full">
-                        Observaciones
-                        <textarea value={editEventForm.notes} onChange={(e) => updateEditEvent('notes', e.target.value)} />
-                      </label>
-                    </div>
-                    <div className="form-actions">
-                      <button className="btn ghost" onClick={() => { setEditingEvent(null); setEditEventForm(null) }} type="button">
-                        Cancelar edición
-                      </button>
-                      <button className="btn primary" disabled={editBusy} type="submit">
-                        <Save size={16} />
-                        {editBusy ? 'Guardando...' : 'Guardar cambios'}
-                      </button>
-                    </div>
-                  </form>
-                </div>
-              )}
-              <EventTable events={events} onEventUpdated={loadData} onEditRequested={startEditingEvent} />
+              <EventTable
+                clients={clients}
+                events={events}
+                onEventUpdated={loadData}
+                onEditRequested={startEditingEvent}
+              />
             </div>
           </section>
         )}
@@ -1916,6 +1944,153 @@ function App() {
         )}
         {!loading && view === 'settings' && <SettingsView />}
       </main>
+
+      {editingEvent &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            aria-labelledby="event-edit-title"
+            aria-modal="true"
+            className="quick-modal-layer client-edit-layer event-edit-layer"
+            onClick={closeEditingEvent}
+            role="dialog"
+          >
+            <div
+              className="modal-2026 quick-modal-card-mobile client-edit-modal event-edit-modal"
+              onClick={(event) => event.stopPropagation()}
+              onPointerDownCapture={editEventModal.handlePointerDown}
+              ref={editEventModal.modalRef}
+            >
+              <div className="modal-2026-head">
+                <div>
+                  <p className="eyebrow">Evento</p>
+                  <h3 id="event-edit-title">Editar evento</h3>
+                  <p className="muted">{editingEvent.title}</p>
+                </div>
+                <button className="btn ghost" disabled={editBusy} onClick={closeEditingEvent} type="button">
+                  <X size={16} />
+                  Cerrar
+                </button>
+              </div>
+              {!editEventForm ? (
+                <div className="modal-2026-body event-edit-loading">
+                  <p className="muted">{editBusy ? "Cargando datos del evento…" : "No se pudo cargar el formulario."}</p>
+                </div>
+              ) : (
+                <form className="modal-2026-form" onSubmit={saveEditedEvent}>
+                  <div className="modal-2026-body" ref={editEventModal.modalBodyRef}>
+                    <div className="form-grid">
+                      <label>
+                        Título
+                        <input value={editEventForm.title} onChange={(e) => updateEditEvent("title", e.target.value)} required />
+                      </label>
+                      <label>
+                        Tipo
+                        <input value={editEventForm.eventType} onChange={(e) => updateEditEvent("eventType", e.target.value)} required />
+                      </label>
+                      <label>
+                        Fecha
+                        <DatePicker
+                          calendarClassName="fancy-datepicker"
+                          className="fancy-date-input"
+                          dateFormat="dd/MM/yyyy"
+                          locale="es"
+                          onChange={(date: Date | null) => updateEditEvent("eventDate", formatYmdDate(date))}
+                          placeholderText="Seleccionar fecha"
+                          required
+                          selected={parseYmdDate(editEventForm.eventDate)}
+                        />
+                      </label>
+                      <label>
+                        Estado (según pagos)
+                        <input readOnly value={eventStatusLabels[editingEvent.status]} />
+                      </label>
+                      <label>
+                        Inicio
+                        <TimePickerField required value={editEventForm.startTime} onChange={(nextValue) => updateEditEvent("startTime", nextValue)} />
+                      </label>
+                      <label>
+                        Fin
+                        <TimePickerField
+                          allowHour24
+                          required
+                          value={editEventForm.endTime}
+                          onChange={(nextValue) => updateEditEvent("endTime", nextValue)}
+                        />
+                      </label>
+                      <label>
+                        Monto total
+                        <input
+                          min="0"
+                          step="0.01"
+                          type="number"
+                          value={editEventForm.totalAmount}
+                          onChange={(e) => updateEditEvent("totalAmount", Number(e.target.value))}
+                          required
+                        />
+                      </label>
+                      <label>
+                        Pago APDAYC
+                        <input
+                          min="0"
+                          step="0.01"
+                          type="number"
+                          value={editEventForm.apdaycAmount}
+                          onChange={(e) => updateEditEvent("apdaycAmount", Number(e.target.value))}
+                        />
+                      </label>
+                      <label>
+                        Capacidad contractual
+                        <input
+                          min="1"
+                          step="1"
+                          type="number"
+                          value={editEventForm.contractCapacityOverride}
+                          onChange={(e) => updateEditEvent("contractCapacityOverride", Number(e.target.value))}
+                          required
+                        />
+                      </label>
+                      <label>
+                        Asume APDAYC
+                        <FancySelect
+                          value={editEventForm.apdaycPayer}
+                          onChange={(nextValue) => updateEditEvent("apdaycPayer", nextValue as ApdaycPayer)}
+                          options={Object.entries(apdaycPayerLabels).map(([value, label]) => ({ value, label }))}
+                        />
+                      </label>
+                      <label>
+                        Estado APDAYC
+                        <FancySelect
+                          value={editEventForm.apdaycStatus}
+                          onChange={(nextValue) => updateEditEvent("apdaycStatus", nextValue as ApdaycStatus)}
+                          options={Object.entries(apdaycStatusLabels).map(([value, label]) => ({ value, label }))}
+                        />
+                      </label>
+                      <label className="full">
+                        Nota APDAYC
+                        <textarea value={editEventForm.apdaycNotes} onChange={(e) => updateEditEvent("apdaycNotes", e.target.value)} />
+                      </label>
+                      <label className="full">
+                        Observaciones
+                        <textarea value={editEventForm.notes} onChange={(e) => updateEditEvent("notes", e.target.value)} />
+                      </label>
+                    </div>
+                  </div>
+                  <div className="form-actions modal-2026-actions">
+                    <button className="btn ghost" disabled={editBusy} onClick={closeEditingEvent} type="button">
+                      Cancelar
+                    </button>
+                    <button className="btn primary" disabled={editBusy} type="submit">
+                      <Save size={16} />
+                      {editBusy ? "Guardando…" : "Guardar cambios"}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>,
+          document.body,
+        )}
       <button
         className={`menu-backdrop ${isMobileMenuOpen ? 'show' : ''}`}
         aria-label="Cerrar menú"
@@ -2232,7 +2407,15 @@ function SettingsView() {
   )
 }
 
-function Dashboard({ summary, events }: { summary: DashboardSummary | null; events: EventItem[] }) {
+function Dashboard({
+  summary,
+  events,
+  clients,
+}: {
+  summary: DashboardSummary | null
+  events: EventItem[]
+  clients: Client[]
+}) {
   const todayKey = dateKey(new Date())
   const firstUpcomingDate = [...events]
     .sort((a, b) => `${a.eventDate}${a.startTime}`.localeCompare(`${b.eventDate}${b.startTime}`))
@@ -2256,7 +2439,9 @@ function Dashboard({ summary, events }: { summary: DashboardSummary | null; even
     return acc
   }, {})
   const selectedEvents = eventsByDate[selectedDate] ?? []
-  const selectedRevenue = selectedEvents.reduce((total, event) => total + Number(event.totalAmount ?? 0), 0)
+  const selectedRevenue = selectedEvents
+    .filter((event) => event.status !== 'CANCELLED')
+    .reduce((total, event) => total + Number(event.paidAmount ?? 0), 0)
   const contractedSelected = selectedEvents.filter((event) => event.status === 'CONTRACTED').length
   const separatedSelected = selectedEvents.filter((event) => event.status === 'SEPARATED').length
   const currentMonthDate = parseDateKey(firstUpcomingDate)
@@ -2275,7 +2460,9 @@ function Dashboard({ summary, events }: { summary: DashboardSummary | null; even
     const latest = floorEvents[floorEvents.length - 1]
     const contracted = floorEvents.filter((event) => event.status === 'CONTRACTED').length
     const separated = floorEvents.filter((event) => event.status === 'SEPARATED').length
-    const revenue = floorEvents.reduce((total, event) => total + Number(event.totalAmount ?? 0), 0)
+    const revenue = floorEvents
+      .filter((event) => event.status !== 'CANCELLED')
+      .reduce((total, event) => total + Number(event.paidAmount ?? 0), 0)
     return {
       ...item,
       upcoming,
@@ -2324,13 +2511,15 @@ function Dashboard({ summary, events }: { summary: DashboardSummary | null; even
     setDownloadingId(event.id)
     try {
       const preview = await api.contractPreview(event.id)
-      setEventDetailMap((current) => ({ ...current, [event.id]: preview }))
+      const client = clients.find((item) => item.id === event.clientId)
+      const ready = prepareContractPreviewForPdf(preview, client)
+      setEventDetailMap((current) => ({ ...current, [event.id]: ready }))
       setDetailErrorMap((current) => {
         const next = { ...current }
         delete next[event.id]
         return next
       })
-      await downloadEventContractPdf(preview)
+      await downloadEventContractPdf(ready, client)
     } catch {
       alert('No se pudo descargar el contrato. Intente nuevamente.')
     } finally {
@@ -2479,7 +2668,7 @@ function Dashboard({ summary, events }: { summary: DashboardSummary | null; even
     { label: 'Ambientes', value: summary?.totalFloors ?? 0, icon: Building2 },
     { label: 'Paquetes', value: summary?.totalPackages ?? 0, icon: Package },
     { label: 'Eventos 30 días', value: summary?.eventsNext30Days ?? 0, icon: CalendarDays },
-    { label: 'Contratado', value: money.format(summary?.totalContracted ?? 0), icon: CircleDollarSign },
+    { label: 'Ingreso cobrado', value: money.format(summary?.totalContracted ?? 0), icon: CircleDollarSign },
   ]
 
   return (
@@ -2946,6 +3135,8 @@ function EventsView({
   peruLocations,
   selectedPackage,
   eventForm,
+  advanceAmount,
+  updateAdvanceAmount,
   updateEvent,
   submitEvent,
   createQuickClient,
@@ -2957,6 +3148,8 @@ function EventsView({
   peruLocations: PeruLocations
   selectedPackage?: EventPackage
   eventForm: EventPayload
+  advanceAmount: number
+  updateAdvanceAmount: (value: number) => void
   updateEvent: <K extends keyof EventPayload>(key: K, value: EventPayload[K]) => void
   submitEvent: (event: FormEvent) => Promise<void>
   createQuickClient: (payload: ClientPayload) => Promise<void>
@@ -3275,7 +3468,9 @@ function EventsView({
                   const selected = packages.find((item) => item.id === nextValue)
                   updateEvent('packageId', nextValue)
                   if (selected) {
-                    updateEvent('totalAmount', Number(selected.basePrice))
+                    const total = Number(selected.basePrice)
+                    updateEvent('totalAmount', total)
+                    updateAdvanceAmount(suggestAdvanceFromPackage(selected, total))
                     updateEvent('apdaycStatus', 'PENDING')
                     updateEvent('apdaycPayer', 'CLIENT')
                     if (selected.includedCapacity) {
@@ -3287,6 +3482,8 @@ function EventsView({
                         ? 'No incluye IGV ni pago de APDAYC; lo asume la promoción o institución contratante.'
                         : 'APDAYC u otros derechos no incluidos son asumidos por el cliente salvo acuerdo escrito.',
                     )
+                  } else {
+                    updateAdvanceAmount(0)
                   }
                 }}
                 placeholder="Personalizado"
@@ -3325,21 +3522,27 @@ function EventsView({
                 selected={parseYmdDate(eventForm.eventDate)}
               />
             </label>
+            <p className="event-status-hint full">
+              El estado se actualiza al guardar: sin adelanto queda en <strong>Consulta</strong>; con adelanto pasa a{' '}
+              <strong>Separado</strong>; si el adelanto cubre el total, queda <strong>Contratado</strong>.
+            </p>
             <label>
-              Estado
-              <FancySelect
-                value={eventForm.status}
-                onChange={(nextValue) => updateEvent('status', nextValue as EventStatus)}
-                options={eventStatusOptions}
+              Inicio
+              <TimePickerField
+                allowHour24
+                required
+                value={eventForm.startTime}
+                onChange={(nextValue) => updateEvent('startTime', nextValue)}
               />
             </label>
             <label>
-              Inicio
-              <TimePickerField required value={eventForm.startTime} onChange={(nextValue) => updateEvent('startTime', nextValue)} />
-            </label>
-            <label>
               Fin
-              <TimePickerField required value={eventForm.endTime} onChange={(nextValue) => updateEvent('endTime', nextValue)} />
+              <TimePickerField
+                allowHour24
+                required
+                value={eventForm.endTime}
+                onChange={(nextValue) => updateEvent('endTime', nextValue)}
+              />
             </label>
             <label>
               Monto total
@@ -3348,9 +3551,26 @@ function EventsView({
                 step="0.01"
                 type="number"
                 value={eventForm.totalAmount}
-                onChange={(e) => updateEvent('totalAmount', Number(e.target.value))}
+                onChange={(e) => {
+                  const total = Number(e.target.value)
+                  updateEvent('totalAmount', total)
+                  if (selectedPackage) {
+                    updateAdvanceAmount(suggestAdvanceFromPackage(selectedPackage, total))
+                  }
+                }}
                 required
               />
+            </label>
+            <label>
+              Adelanto
+              <input
+                min="0"
+                step="0.01"
+                type="number"
+                value={advanceAmount === 0 ? '' : advanceAmount}
+                onChange={(e) => updateAdvanceAmount(Number(e.target.value) || 0)}
+              />
+              <small className="field-hint">{advanceHintFromPackage(selectedPackage, Number(eventForm.totalAmount))}</small>
             </label>
             <label>
               Capacidad máxima contractual
@@ -3586,10 +3806,12 @@ function cancellationFinancialLine(event: EventItem) {
 }
 
 function EventTable({
+  clients,
   events,
   onEventUpdated,
   onEditRequested,
 }: {
+  clients: Client[]
   events: EventItem[]
   onEventUpdated: () => Promise<void>
   onEditRequested?: (event: EventItem) => void
@@ -3614,15 +3836,22 @@ function EventTable({
   const [paymentTarget, setPaymentTarget] = useState<EventItem | null>(null)
   const [paymentRows, setPaymentRows] = useState<ClientPayment[]>([])
   const [paymentBusy, setPaymentBusy] = useState(false)
+  const [downloadingVoucherId, setDownloadingVoucherId] = useState<string | null>(null)
+  const [operationNumberTarget, setOperationNumberTarget] = useState<ClientPayment | null>(null)
+  const [operationNumberDraft, setOperationNumberDraft] = useState('')
+  const [operationNumberIntent, setOperationNumberIntent] = useState<'add' | 'download'>('add')
+  const operationNumberModal = useMobileModalBehavior(Boolean(operationNumberTarget))
   const [paymentForm, setPaymentForm] = useState<ClientPaymentPayload>({
     paymentDate: new Date().toISOString().slice(0, 10),
     concept: 'Adelanto',
     amount: 0,
     method: 'Efectivo',
     paymentType: 'EVENT_PAYMENT',
+    operationNumber: '',
     internalReceiptNumber: '',
     notes: '',
   })
+  const paymentNeedsOperationNumber = paymentMethodRequiresOperationNumber(paymentForm.method)
   const [staffAssignmentTarget, setStaffAssignmentTarget] = useState<EventItem | null>(null)
   const cancelModal = useMobileModalBehavior(Boolean(cancelTarget))
   const paymentModal = useMobileModalBehavior(Boolean(paymentTarget))
@@ -3647,7 +3876,8 @@ function EventTable({
     setDownloadingId(event.id)
     try {
       const preview = await api.contractPreview(event.id)
-      await downloadEventContractPdf(preview)
+      const client = clients.find((item) => item.id === event.clientId)
+      await downloadEventContractPdf(preview, client)
     } catch {
       alert('No se pudo descargar el contrato. Intente nuevamente.')
     } finally {
@@ -3663,6 +3893,7 @@ function EventTable({
       amount: 0,
       method: 'Efectivo',
       paymentType: 'EVENT_PAYMENT',
+      operationNumber: '',
       internalReceiptNumber: '',
       notes: '',
     })
@@ -3680,6 +3911,47 @@ function EventTable({
     if (paymentBusy) return
     setPaymentTarget(null)
     setPaymentRows([])
+    setOperationNumberTarget(null)
+    setOperationNumberDraft('')
+  }
+
+  function openOperationNumberModal(row: ClientPayment, intent: 'add' | 'download' = 'add') {
+    setOperationNumberTarget(row)
+    setOperationNumberDraft(paymentOperationNumber(row) ?? '')
+    setOperationNumberIntent(intent)
+  }
+
+  function closeOperationNumberModal(force = false) {
+    if (paymentBusy && !force) return
+    setOperationNumberTarget(null)
+    setOperationNumberDraft('')
+  }
+
+  async function submitOperationNumber(event: FormEvent) {
+    event.preventDefault()
+    if (!paymentTarget || !operationNumberTarget) return
+    const trimmed = operationNumberDraft.trim()
+    if (!trimmed) {
+      alert('Ingresa el número de operación.')
+      return
+    }
+    const intent = operationNumberIntent
+    const paymentId = operationNumberTarget.id
+    setPaymentBusy(true)
+    try {
+      await api.updateEventPayment(paymentTarget.id, paymentId, { operationNumber: trimmed })
+      const nextRows = await api.eventPayments(paymentTarget.id)
+      setPaymentRows(nextRows)
+      closeOperationNumberModal(true)
+      if (intent === 'download') {
+        const saved = nextRows.find((item) => item.id === paymentId)
+        if (saved) await downloadPaymentVoucher(saved, { skipMissingOperationPrompt: true })
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'No se pudo guardar el número de operación.')
+    } finally {
+      setPaymentBusy(false)
+    }
   }
 
   function updatePayment<K extends keyof ClientPaymentPayload>(key: K, value: ClientPaymentPayload[K]) {
@@ -3693,13 +3965,22 @@ function EventTable({
       alert('Ingresa un monto mayor a 0.')
       return
     }
+    if (paymentMethodRequiresOperationNumber(paymentForm.method) && !paymentForm.operationNumber?.trim()) {
+      alert('Ingresa el número de operación para pagos por BCP, BBVA o Scotiabank.')
+      return
+    }
     setPaymentBusy(true)
     try {
+      const operationNumber = paymentForm.operationNumber?.trim() ?? ''
       await api.createEventPayment(paymentTarget.id, {
-        ...paymentForm,
+        paymentDate: paymentForm.paymentDate,
+        concept: paymentForm.concept,
         amount: Number(paymentForm.amount),
-        internalReceiptNumber: paymentForm.internalReceiptNumber || undefined,
-        notes: paymentForm.notes || undefined,
+        method: paymentForm.method,
+        paymentType: paymentForm.paymentType,
+        operationNumber: operationNumber || undefined,
+        internalReceiptNumber: paymentForm.internalReceiptNumber?.trim() || undefined,
+        notes: paymentForm.notes?.trim() || undefined,
       })
       const [nextRows] = await Promise.all([api.eventPayments(paymentTarget.id), onEventUpdated()])
       setPaymentRows(nextRows)
@@ -3707,6 +3988,7 @@ function EventTable({
         ...current,
         concept: 'Pago a cuenta',
         amount: 0,
+        operationNumber: '',
         internalReceiptNumber: '',
         notes: '',
       }))
@@ -3787,7 +4069,7 @@ function EventTable({
       setRescheduleForm({
         eventDate: event.eventDate,
         startTime: shortTime(event.startTime),
-        endTime: shortTime(event.endTime),
+        endTime: pickerEndTimeFromApi(shortTime(event.startTime), event.endTime),
       })
     } catch (err) {
       if (isHttp404Error(err)) {
@@ -3796,7 +4078,7 @@ function EventTable({
         setRescheduleForm({
           eventDate: event.eventDate,
           startTime: shortTime(event.startTime),
-          endTime: shortTime(event.endTime),
+          endTime: pickerEndTimeFromApi(shortTime(event.startTime), event.endTime),
         })
         setRescheduleFallbackNote(
           'El servidor aún no expone la agenda ampliada (404). Mostrando eventos del mismo ambiente según los datos cargados en pantalla. Reinicia o actualiza areli-api con la última versión para la lista oficial y las validaciones del servidor.',
@@ -3820,8 +4102,8 @@ function EventTable({
     try {
       await api.rescheduleEvent(rescheduleTarget.id, {
         eventDate: rescheduleForm.eventDate,
-        startTime: rescheduleForm.startTime,
-        endTime: rescheduleForm.endTime,
+        startTime: apiTimeFromPicker(rescheduleForm.startTime),
+        endTime: apiTimeFromPicker(rescheduleForm.endTime),
       })
       await onEventUpdated()
       setRescheduleTarget(null)
@@ -3838,6 +4120,70 @@ function EventTable({
     .filter((row) => row.countsTowardsEventTotal)
     .reduce((sum, row) => sum + Number(row.amount ?? 0), 0)
   const paymentEventBalance = paymentTarget ? Math.max(0, Number(paymentTarget.totalAmount ?? 0) - paymentEventPaid) : 0
+  const paymentRowsNewestFirst = useMemo(
+    () =>
+      [...paymentRows].sort((a, b) => {
+        const keyA = `${a.paymentDate}${a.createdAt ?? a.id}`
+        const keyB = `${b.paymentDate}${b.createdAt ?? b.id}`
+        return keyB.localeCompare(keyA)
+      }),
+    [paymentRows],
+  )
+
+  function savePaymentOperationNumber(row: ClientPayment) {
+    openOperationNumberModal(row, 'add')
+  }
+
+  async function downloadPaymentVoucher(
+    row: ClientPayment,
+    options?: { skipMissingOperationPrompt?: boolean },
+  ) {
+    if (!paymentTarget) return
+    if (
+      !options?.skipMissingOperationPrompt &&
+      paymentMethodRequiresOperationNumber(String(row.method ?? '')) &&
+      !paymentOperationNumber(row)
+    ) {
+      openOperationNumberModal(row, 'download')
+      return
+    }
+    setDownloadingVoucherId(row.id)
+    try {
+      const freshRows = await api.eventPayments(paymentTarget.id)
+      const payment = freshRows.find((item) => item.id === row.id) ?? row
+      const eventTotal = Number(paymentTarget.totalAmount ?? 0)
+      const { paidToDate, balanceAfter } = paymentVoucherTotals(freshRows, payment.id, eventTotal)
+      const linkedClient = clients.find((item) => item.id === paymentTarget.clientId)
+      let clientDocument = clientDocumentLabel(linkedClient)
+      let clientPhone = contractualContactNumber(linkedClient)
+      if (!clientDocument || !clientPhone) {
+        const preview = await api.contractPreview(paymentTarget.id)
+        clientDocument = clientDocument ?? documentLabelFromNumber(preview.clientDocument)
+        clientPhone = clientPhone || preview.clientPhone?.trim() || ''
+      }
+      await downloadPaymentVoucherPdf({
+        payment,
+        eventCode: eventCodeLabel(paymentTarget),
+        clientName: paymentTarget.clientName,
+        clientDocument,
+        clientPhone: clientPhone || undefined,
+        eventTitle: paymentTarget.title,
+        floorName: paymentTarget.floorName,
+        eventDate: paymentTarget.eventDate,
+        startTime: paymentTarget.startTime,
+        endTime: paymentTarget.endTime,
+        totalAmount: eventTotal,
+        paidToDate,
+        balanceAfter,
+        apdaycPayer: paymentTarget.apdaycPayer,
+        apdaycStatus: paymentTarget.apdaycStatus,
+      })
+    } catch {
+      alert('No se pudo generar el comprobante. Intente nuevamente.')
+    } finally {
+      setDownloadingVoucherId(null)
+    }
+  }
   const cancelAdvanceAmount = Number(cancelTarget?.paidAmount ?? 0)
   const cancelRefundedPreview =
     cancelPaymentStatus === 'DEVOLUCION_TOTAL'
@@ -3855,6 +4201,12 @@ function EventTable({
     ...option,
     disabled: cancelAdvanceAmount > 0 ? option.value === 'SIN_ADELANTO' : option.value !== 'SIN_ADELANTO',
   }))
+
+  useEffect(() => {
+    if (!paymentTarget) return
+    const updated = events.find((item) => item.id === paymentTarget.id)
+    if (updated) setPaymentTarget(updated)
+  }, [events, paymentTarget?.id])
 
   if (events.length === 0) {
     return <p className="empty">No hay eventos registrados todavía.</p>
@@ -3895,7 +4247,11 @@ function EventTable({
           </label>
           <label>
             Nueva hora fin
-            <TimePickerField value={rescheduleForm.endTime} onChange={(nextValue) => setRescheduleForm((prev) => ({ ...prev, endTime: nextValue }))} />
+            <TimePickerField
+              allowHour24
+              value={rescheduleForm.endTime}
+              onChange={(nextValue) => setRescheduleForm((prev) => ({ ...prev, endTime: nextValue }))}
+            />
           </label>
         </div>
         <div className="reschedule-agenda">
@@ -4023,8 +4379,29 @@ function EventTable({
                 </label>
                 <label>
                   Medio de pago
-                  <input value={paymentForm.method} onChange={(event) => updatePayment('method', event.target.value)} required />
+                  <FancySelect
+                    value={paymentForm.method}
+                    onChange={(value) => {
+                      const method = value as PaymentMethod
+                      updatePayment('method', method)
+                      if (!paymentMethodRequiresOperationNumber(method)) {
+                        updatePayment('operationNumber', '')
+                      }
+                    }}
+                    options={paymentMethodOptions}
+                  />
                 </label>
+                {paymentNeedsOperationNumber && (
+                  <label>
+                    Número de operación
+                    <input
+                      value={paymentForm.operationNumber ?? ''}
+                      onChange={(event) => updatePayment('operationNumber', event.target.value)}
+                      placeholder="Ej. 00123456789"
+                      required
+                    />
+                  </label>
+                )}
                 <label>
                   Recibo interno
                   <input
@@ -4044,25 +4421,100 @@ function EventTable({
                 </button>
               </div>
             </form>
-            <div className="payment-history">
-              <strong>Historial de pagos</strong>
+            <section className="payment-history">
+              <header className="payment-history-head">
+                <div>
+                  <strong>Historial de pagos</strong>
+                  <p>Comprobantes internos para enviar al cliente</p>
+                </div>
+                {paymentRows.length > 0 && (
+                  <span className="payment-history-count">
+                    {paymentRows.length} movimiento{paymentRows.length === 1 ? '' : 's'}
+                  </span>
+                )}
+              </header>
               {paymentRows.length === 0 ? (
                 <p className="empty compact">Todavía no hay pagos registrados.</p>
               ) : (
-                paymentRows.map((row) => (
-                  <article key={row.id}>
-                    <div>
-                      <strong>{row.concept}</strong>
-                      <span>{row.paymentDate} - {paymentTypeLabels[row.paymentType]}</span>
-                    </div>
-                    <div>
-                      <strong>{money.format(row.amount)}</strong>
-                      <span>{row.countsTowardsEventTotal ? 'Suma al evento' : 'No es ingreso del evento'}</span>
-                    </div>
-                  </article>
-                ))
+                <ul className="payment-history-list">
+                  {paymentRowsNewestFirst.map((row) => {
+                    const voucherBusy = downloadingVoucherId === row.id
+                    const receiptLabel =
+                      row.internalReceiptNumber?.trim() ||
+                      `ARELI-PAGO-${row.paymentDate}-${row.id.replace(/-/g, '').slice(0, 8).toUpperCase()}`
+                    return (
+                      <li key={row.id} className="payment-history-card">
+                        <div className="payment-history-card-main">
+                          <div className="payment-history-card-top">
+                            <strong className="payment-history-concept">{row.concept}</strong>
+                            <span className="payment-history-amount">{money.format(row.amount)}</span>
+                          </div>
+                          <dl className="payment-history-meta">
+                            <div>
+                              <dt>Fecha</dt>
+                              <dd>{formatEventDateNumeric(row.paymentDate)}</dd>
+                            </div>
+                            <div>
+                              <dt>Tipo</dt>
+                              <dd>{paymentTypeLabels[row.paymentType]}</dd>
+                            </div>
+                            <div>
+                              <dt>Medio</dt>
+                              <dd>{formatPaymentMethodLine(row)}</dd>
+                            </div>
+                            {paymentMethodRequiresOperationNumber(String(row.method ?? '')) && (
+                              <div>
+                                <dt>N° operación</dt>
+                                <dd className="payment-history-receipt">
+                                  {paymentOperationNumber(row) ?? (
+                                    <span className="payment-op-missing">Sin registrar</span>
+                                  )}
+                                </dd>
+                              </div>
+                            )}
+                            <div>
+                              <dt>Comprobante</dt>
+                              <dd className="payment-history-receipt">{receiptLabel}</dd>
+                            </div>
+                          </dl>
+                          <div className="payment-history-badges">
+                            <span
+                              className={
+                                row.countsTowardsEventTotal ? 'payment-badge income' : 'payment-badge neutral'
+                              }
+                            >
+                              {row.countsTowardsEventTotal ? 'Suma al evento' : 'No es ingreso del evento'}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="payment-history-actions">
+                          {paymentMethodRequiresOperationNumber(String(row.method ?? '')) &&
+                            !paymentOperationNumber(row) && (
+                              <button
+                                className="btn ghost payment-op-btn"
+                                disabled={paymentBusy || voucherBusy}
+                                onClick={() => void savePaymentOperationNumber(row)}
+                                type="button"
+                              >
+                                Agregar N° op.
+                              </button>
+                            )}
+                          <button
+                            className="btn ghost payment-voucher-btn"
+                            disabled={paymentBusy || voucherBusy}
+                            onClick={() => void downloadPaymentVoucher(row)}
+                            type="button"
+                          >
+                            <Download size={15} />
+                            {voucherBusy ? 'Generando PDF...' : 'Descargar comprobante'}
+                          </button>
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
               )}
-            </div>
+            </section>
           </div>
           <div className="form-actions modal-2026-actions">
             <button className="btn ghost" disabled={paymentBusy} onClick={() => closePayments()} type="button">
@@ -4072,6 +4524,92 @@ function EventTable({
         </div>
       </div>
     )}
+    {operationNumberTarget &&
+      typeof document !== 'undefined' &&
+      createPortal(
+        <div
+          aria-labelledby="payment-operation-title"
+          aria-modal="true"
+          className="quick-modal-layer payment-operation-modal-layer"
+          role="dialog"
+          onClick={() => closeOperationNumberModal()}
+        >
+          <div
+            className="quick-modal-card modal-2026 quick-modal-card-mobile payment-operation-modal"
+            ref={operationNumberModal.modalRef}
+            onPointerDownCapture={operationNumberModal.handlePointerDown}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="quick-modal-head modal-2026-head">
+              <div>
+                <h3 id="payment-operation-title">Número de operación</h3>
+                <p className="payment-operation-subtitle">
+                  {operationNumberIntent === 'download'
+                    ? 'Regístralo para incluirlo en el comprobante PDF'
+                    : 'Voucher o transferencia bancaria'}
+                </p>
+              </div>
+              <button
+                className="btn icon modal-close-btn"
+                disabled={paymentBusy}
+                onClick={() => closeOperationNumberModal()}
+                type="button"
+              >
+                <X size={15} />
+                Cerrar
+              </button>
+            </div>
+            <form className="modal-2026-form payment-operation-form" onSubmit={submitOperationNumber}>
+              <div className="modal-2026-body" ref={operationNumberModal.modalBodyRef}>
+                <div className="payment-operation-summary">
+                  <div>
+                    <span>Concepto</span>
+                    <strong>{operationNumberTarget.concept}</strong>
+                  </div>
+                  <div>
+                    <span>Monto</span>
+                    <strong>{money.format(operationNumberTarget.amount)}</strong>
+                  </div>
+                  <div>
+                    <span>Banco</span>
+                    <strong>{formatPaymentMethodLine(operationNumberTarget)}</strong>
+                  </div>
+                </div>
+                <label className="payment-operation-field">
+                  Número de operación
+                  <input
+                    autoComplete="off"
+                    autoFocus
+                    className="payment-operation-input"
+                    inputMode="numeric"
+                    onChange={(event) => setOperationNumberDraft(event.target.value)}
+                    placeholder="Ej. 00123456789"
+                    required
+                    value={operationNumberDraft}
+                  />
+                  <span className="payment-operation-hint">
+                    Aparecerá en el comprobante interno y en el historial del pago.
+                  </span>
+                </label>
+              </div>
+              <div className="form-actions modal-2026-actions payment-operation-actions">
+                <button className="btn ghost" disabled={paymentBusy} onClick={() => closeOperationNumberModal()} type="button">
+                  Cancelar
+                </button>
+                <button className="btn primary" disabled={paymentBusy} type="submit">
+                  <Save size={15} />
+                  {paymentBusy
+                    ? 'Guardando...'
+                    : operationNumberIntent === 'download'
+                      ? 'Guardar y descargar PDF'
+                      : 'Guardar número'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body,
+      )}
     {cancelTarget && (
       <div
         aria-labelledby="cancel-event-title"
@@ -4100,12 +4638,59 @@ function EventTable({
           </div>
           <div className="modal-2026-body" ref={cancelModal.modalBodyRef}>
             <p className="cancel-event-lead">
-              ¿Anular <strong>{cancelTarget.title}</strong>? Se actualizará el estado y pueden aplicarse retenciones según el
-              contrato.
+              ¿Anular <strong>{cancelTarget.title}</strong>? El evento pasará a cancelado. Los pagos registrados se
+              conservan en el historial.
             </p>
+            <div className="payment-summary-grid cancel-summary-grid">
+              <div>
+                <span>Adelanto recibido</span>
+                <strong>{money.format(cancelAdvanceAmount)}</strong>
+              </div>
+              <div>
+                <span>Retención prevista</span>
+                <strong>{money.format(cancelRetainedPreview)}</strong>
+              </div>
+              <div>
+                <span>Devolución prevista</span>
+                <strong>{money.format(cancelRefundedPreview)}</strong>
+              </div>
+            </div>
             <div className="form-grid">
               <label className="full">
-                Tipo de anulación
+                Tratamiento del adelanto
+                <FancySelect
+                  value={cancelPaymentStatus}
+                  onChange={(nextValue) => setCancelPaymentStatus(nextValue as CancellationPaymentStatus)}
+                  options={cancelPaymentOptions}
+                />
+              </label>
+              {cancelPaymentStatus === 'DEVOLUCION_PARCIAL' && (
+                <label>
+                  Monto devuelto al cliente
+                  <input
+                    min="0.01"
+                    step="0.01"
+                    type="number"
+                    value={cancelRefundedAmount || ''}
+                    onChange={(e) => setCancelRefundedAmount(Number(e.target.value))}
+                    required
+                  />
+                </label>
+              )}
+              <label>
+                Fecha de cancelación
+                <input type="date" value={cancelDate} onChange={(e) => setCancelDate(e.target.value)} required />
+              </label>
+              <label className="full">
+                Motivo de cancelación
+                <input
+                  value={cancelReason}
+                  onChange={(e) => setCancelReason(e.target.value)}
+                  placeholder="Ej. Cliente reprogramó en otro local"
+                />
+              </label>
+              <label className="full">
+                Tipo de anulación (contrato)
                 <FancySelect
                   value={cancelCancellationType}
                   onChange={(nextValue) => setCancelCancellationType(nextValue as EventCancellationType)}
@@ -4116,10 +4701,19 @@ function EventTable({
                 />
               </label>
               <label className="full">
+                Observación
+                <textarea
+                  placeholder="Detalle interno de la cancelación..."
+                  rows={2}
+                  value={cancelObservation}
+                  onChange={(e) => setCancelObservation(e.target.value)}
+                />
+              </label>
+              <label className="full">
                 Notas (opcional)
                 <textarea
                   placeholder="Ej. Cliente avisó por WhatsApp el..."
-                  rows={3}
+                  rows={2}
                   value={cancelNotes}
                   onChange={(e) => setCancelNotes(e.target.value)}
                 />
@@ -4158,6 +4752,14 @@ function EventTable({
         <span>{sortMode === 'recent' ? 'Últimos eventos creados' : 'Eventos por fecha (no anulados)'}</span>
         <strong>{visibleEvents.length} eventos</strong>
       </div>
+      <label className="event-filter-select">
+        <span>Filtrar</span>
+        <FancySelect
+          value={cancellationFilter}
+          onChange={(nextValue) => setCancellationFilter(nextValue as EventCancellationFilter)}
+          options={eventCancellationFilterOptions}
+        />
+      </label>
       <div className="event-sort-tabs" role="tablist" aria-label="Orden de eventos">
         <button
           aria-selected={sortMode === 'recent'}
@@ -4198,7 +4800,7 @@ function EventTable({
             <th>Cliente</th>
             <th>Ambiente</th>
             <th>Estado</th>
-            <th>Monto</th>
+            <th>Total / Pagado / Saldo</th>
             <th>APDAYC</th>
             <th>Acciones</th>
           </tr>
@@ -4226,8 +4828,20 @@ function EventTable({
               <td>{event.floorName}</td>
               <td>
                 <span className={`status ${event.status}`}>{eventStatusLabels[event.status]}</span>
+                {event.rescheduled && event.status !== 'CANCELLED' && (
+                  <small className="event-rescheduled-tag">Reprogramado</small>
+                )}
+                {event.status === 'CANCELLED' && (
+                  <small className="event-cancel-financial">{cancellationFinancialLine(event)}</small>
+                )}
               </td>
-              <td>{money.format(event.totalAmount)}</td>
+              <td>
+                <strong>{money.format(event.totalAmount)}</strong>
+                <br />
+                <small>Pagado: {money.format(event.paidAmount ?? 0)}</small>
+                <br />
+                <small>Saldo: {money.format(event.balanceAmount ?? 0)}</small>
+              </td>
               <td>
                 {money.format(event.apdaycAmount ?? 0)}
                 <br />
@@ -4235,6 +4849,15 @@ function EventTable({
               </td>
               <td className="actions-cell event-actions-compact-wrap">
                 <div className="event-actions-buttons">
+                <button
+                  className="btn icon"
+                  disabled={event.status === 'CANCELLED'}
+                  onClick={() => void openPayments(event)}
+                  type="button"
+                >
+                  <CircleDollarSign size={16} />
+                  Pagos
+                </button>
                 <button
                   className="btn icon"
                   onClick={() => setStaffAssignmentTarget(event)}
@@ -4252,7 +4875,9 @@ function EventTable({
                 </button>
                 <button
                   className="btn icon"
-                  disabled={processingId === event.id || loadingRescheduleId === event.id}
+                  disabled={
+                    event.status === 'CANCELLED' || processingId === event.id || loadingRescheduleId === event.id
+                  }
                   onClick={() => void openReschedule(event)}
                   type="button"
                 >
@@ -4260,7 +4885,7 @@ function EventTable({
                 </button>
                 <button
                   className="btn icon danger"
-                  disabled={processingId === event.id}
+                  disabled={event.status === 'CANCELLED' || processingId === event.id}
                   onClick={() => openCancelDialog(event)}
                   type="button"
                 >
@@ -4313,19 +4938,37 @@ function EventTable({
               <dd>{event.floorName}</dd>
             </div>
             <div>
-              <dt>Monto</dt>
+              <dt>Total</dt>
               <dd>{money.format(event.totalAmount)}</dd>
+            </div>
+            <div>
+              <dt>Pagado / Saldo</dt>
+              <dd>
+                {money.format(event.paidAmount ?? 0)} / {money.format(event.balanceAmount ?? 0)}
+              </dd>
             </div>
             <div>
               <dt>APDAYC</dt>
               <dd>{money.format(event.apdaycAmount ?? 0)}</dd>
             </div>
           </dl>
+          {event.status === 'CANCELLED' && (
+            <p className="event-cancel-financial">{cancellationFinancialLine(event)}</p>
+          )}
           <p>
             {event.packageName ?? event.eventType} - APDAYC: {apdaycStatusLabels[event.apdaycStatus]}
           </p>
           <p>{createdLabel(event.createdAt)}</p>
           <div className="mobile-card-actions">
+            <button
+              className="btn icon"
+              disabled={event.status === 'CANCELLED'}
+              onClick={() => void openPayments(event)}
+              type="button"
+            >
+              <CircleDollarSign size={16} />
+              Pagos
+            </button>
             <button className="btn icon" onClick={() => onEditRequested?.(event)} type="button">
               Editar
             </button>
@@ -4335,7 +4978,9 @@ function EventTable({
             </button>
             <button
               className="btn icon"
-              disabled={processingId === event.id || loadingRescheduleId === event.id}
+              disabled={
+                event.status === 'CANCELLED' || processingId === event.id || loadingRescheduleId === event.id
+              }
               onClick={() => void openReschedule(event)}
               type="button"
             >
@@ -4343,7 +4988,7 @@ function EventTable({
             </button>
             <button
               className="btn icon danger"
-              disabled={processingId === event.id}
+              disabled={event.status === 'CANCELLED' || processingId === event.id}
               onClick={() => openCancelDialog(event)}
               type="button"
             >
@@ -5272,7 +5917,8 @@ function PackagesView({
               <p>{eventPackage.includedServices || 'Sin descripcion registrada.'}</p>
               <p>
                 Capacidad: {eventPackage.includedCapacity ?? 'Por definir'} - Garantia:{' '}
-                {money.format(eventPackage.guaranteeAmount ?? 0)}
+                {money.format(eventPackage.guaranteeAmount ?? 0)} - Adelanto sugerido:{' '}
+                {money.format(suggestAdvanceFromPackage(eventPackage, Number(eventPackage.basePrice)))}
               </p>
               <p>{eventPackage.terms || 'Sin condiciones registradas.'}</p>
               <div className="package-card-actions">
@@ -5355,6 +6001,33 @@ function PackagesView({
                     />
                   </label>
                   <label>
+                    Adelanto fijo (S/)
+                    <input
+                      min="0"
+                      step="0.01"
+                      type="number"
+                      value={packageForm.depositAmount ?? ''}
+                      onChange={(event) =>
+                        updatePackageForm('depositAmount', event.target.value ? Number(event.target.value) : undefined)
+                      }
+                      placeholder="Ej. 800 para promociones"
+                    />
+                  </label>
+                  <label>
+                    Adelanto (% del total)
+                    <input
+                      min="0"
+                      max="100"
+                      step="0.01"
+                      type="number"
+                      value={packageForm.depositPercent ?? ''}
+                      onChange={(event) =>
+                        updatePackageForm('depositPercent', event.target.value ? Number(event.target.value) : undefined)
+                      }
+                      placeholder="Ej. 30"
+                    />
+                  </label>
+                  <label>
                     Estado
                     <FancySelect
                       value={packageForm.active === false ? 'inactive' : 'active'}
@@ -5420,6 +6093,8 @@ function emptyPackagePayload(): EventPackagePayload {
     eventType: '',
     basePrice: 0,
     includedCapacity: undefined,
+    depositAmount: undefined,
+    depositPercent: 30,
     guaranteeAmount: 0,
     includedServices: '',
     terms: '',
@@ -5433,6 +6108,8 @@ function packageToPayload(eventPackage: EventPackage): EventPackagePayload {
     eventType: eventPackage.eventType ?? '',
     basePrice: Number(eventPackage.basePrice ?? 0),
     includedCapacity: eventPackage.includedCapacity,
+    depositAmount: eventPackage.depositAmount,
+    depositPercent: eventPackage.depositPercent,
     guaranteeAmount: Number(eventPackage.guaranteeAmount ?? 0),
     includedServices: eventPackage.includedServices ?? '',
     terms: eventPackage.terms ?? '',
@@ -5447,6 +6124,10 @@ function cleanPackagePayload(payload: EventPackagePayload): EventPackagePayload 
     includedServices: payload.includedServices?.trim() || undefined,
     terms: payload.terms?.trim() || undefined,
     includedCapacity: payload.includedCapacity && payload.includedCapacity > 0 ? payload.includedCapacity : undefined,
+    depositAmount:
+      payload.depositAmount != null && payload.depositAmount > 0 ? Number(payload.depositAmount) : undefined,
+    depositPercent:
+      payload.depositPercent != null && payload.depositPercent > 0 ? Number(payload.depositPercent) : undefined,
     guaranteeAmount: Number(payload.guaranteeAmount ?? 0),
     basePrice: Number(payload.basePrice ?? 0),
     active: payload.active !== false,
@@ -6215,9 +6896,7 @@ const monthNameToNumber: Record<string, number> = {
 }
 
 function newAiDraft(): AiEventDraft {
-  return {
-    status: 'SEPARATED',
-  }
+  return {}
 }
 
 function aiMessageId() {

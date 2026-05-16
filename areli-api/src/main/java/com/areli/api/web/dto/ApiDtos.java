@@ -19,9 +19,22 @@ import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.LocalTime;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public final class ApiDtos {
     private ApiDtos() {
+    }
+
+    /** Domicilio + provincia + distrito para contratos y PDF. */
+    static String formatClientFullAddress(Client client) {
+        if (client == null) {
+            return "";
+        }
+        return Stream.of(client.getAddress(), client.getProvince(), client.getDistrict())
+                .filter(part -> part != null && !part.isBlank())
+                .map(String::strip)
+                .collect(Collectors.joining(" - "));
     }
 
     public record ClientRequest(
@@ -126,6 +139,8 @@ public final class ApiDtos {
             String eventType,
             @NotNull @DecimalMin("0.00") BigDecimal basePrice,
             Integer includedCapacity,
+            BigDecimal depositAmount,
+            BigDecimal depositPercent,
             BigDecimal guaranteeAmount,
             String includedServices,
             String terms,
@@ -133,7 +148,18 @@ public final class ApiDtos {
     ) {
     }
 
-    public record PackageResponse(UUID id, String name, String eventType, BigDecimal basePrice, Integer includedCapacity, BigDecimal guaranteeAmount, String includedServices, String terms, boolean active) {
+    public record PackageResponse(
+            UUID id,
+            String name,
+            String eventType,
+            BigDecimal basePrice,
+            Integer includedCapacity,
+            BigDecimal depositAmount,
+            BigDecimal depositPercent,
+            BigDecimal guaranteeAmount,
+            String includedServices,
+            String terms,
+            boolean active) {
         public static PackageResponse from(EventPackage eventPackage) {
             return new PackageResponse(
                     eventPackage.getId(),
@@ -141,6 +167,8 @@ public final class ApiDtos {
                     eventPackage.getEventType(),
                     eventPackage.getBasePrice(),
                     eventPackage.getIncludedCapacity(),
+                    eventPackage.getDepositAmount(),
+                    eventPackage.getDepositPercent(),
                     eventPackage.getGuaranteeAmount(),
                     eventPackage.getIncludedServices(),
                     eventPackage.getTerms(),
@@ -246,6 +274,14 @@ public final class ApiDtos {
             @NotNull @DecimalMin("0.01") BigDecimal amount,
             @NotBlank String method,
             PaymentType paymentType,
+            String operationNumber,
+            String internalReceiptNumber,
+            String notes
+    ) {
+    }
+
+    public record UpdateClientPaymentRequest(
+            String operationNumber,
             String internalReceiptNumber,
             String notes
     ) {
@@ -260,6 +296,7 @@ public final class ApiDtos {
             String method,
             PaymentType paymentType,
             boolean countsTowardsEventTotal,
+            String operationNumber,
             String internalReceiptNumber,
             String notes,
             OffsetDateTime createdAt
@@ -274,6 +311,7 @@ public final class ApiDtos {
                     payment.getMethod(),
                     payment.getPaymentType(),
                     payment.isCountsTowardsEventTotal(),
+                    payment.getOperationNumber(),
                     payment.getInternalReceiptNumber(),
                     payment.getNotes(),
                     payment.getCreatedAt());
@@ -320,6 +358,9 @@ public final class ApiDtos {
             String clientDocument,
             String clientPhone,
             String clientAddress,
+            String clientProvince,
+            String clientDistrict,
+            String clientStreet,
             String floorName,
             String packageName,
             String title,
@@ -363,6 +404,9 @@ public final class ApiDtos {
                     event.getClient().getWhatsapp() != null && !event.getClient().getWhatsapp().isBlank()
                             ? event.getClient().getWhatsapp()
                             : event.getClient().getPhone(),
+                    formatClientFullAddress(event.getClient()),
+                    event.getClient().getProvince(),
+                    event.getClient().getDistrict(),
                     event.getClient().getAddress(),
                     event.getFloor().getName(),
                     packageName,

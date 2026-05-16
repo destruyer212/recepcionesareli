@@ -1,6 +1,5 @@
 package com.areli.api.web.dto;
 
-import com.areli.api.domain.Enums.EventStatus;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -14,7 +13,6 @@ public record UpdateEventRequest(
         @NotNull LocalDate eventDate,
         @NotNull LocalTime startTime,
         @NotNull LocalTime endTime,
-        @NotNull EventStatus status,
         @NotNull @DecimalMin("0.00") BigDecimal totalAmount,
         @NotNull @DecimalMin("0.00") BigDecimal apdaycAmount,
         String apdaycPayer,

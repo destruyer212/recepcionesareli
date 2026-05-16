@@ -7,6 +7,7 @@ import com.areli.api.domain.PaymentAndOperations.ClientPayment;
 import com.areli.api.repository.ClientPaymentRepository;
 import com.areli.api.repository.EventRepository;
 import com.areli.api.web.dto.ApiDtos.ClientPaymentRequest;
+import com.areli.api.web.dto.ApiDtos.UpdateClientPaymentRequest;
 import jakarta.persistence.EntityNotFoundException;
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -42,15 +43,19 @@ public class ClientPaymentService {
         }
 
         PaymentType paymentType = request.paymentType() == null ? PaymentType.EVENT_PAYMENT : request.paymentType();
+        String method = cleanText(request.method());
+        String operationNumber = blankToNull(request.operationNumber());
+        validatePaymentMethod(method, operationNumber);
 
         ClientPayment payment = new ClientPayment();
         payment.setEvent(event);
         payment.setPaymentDate(request.paymentDate());
         payment.setConcept(cleanText(request.concept()));
         payment.setAmount(request.amount());
-        payment.setMethod(cleanText(request.method()));
+        payment.setMethod(method);
         payment.setPaymentType(paymentType);
         payment.setCountsTowardsEventTotal(paymentType == PaymentType.EVENT_PAYMENT);
+        payment.setOperationNumber(operationNumber);
         payment.setInternalReceiptNumber(blankToNull(request.internalReceiptNumber()));
         payment.setNotes(blankToNull(request.notes()));
 
@@ -64,6 +69,33 @@ public class ClientPaymentService {
         ClientPayment saved = payments.save(payment);
         refreshEventStatus(event);
         return saved;
+    }
+
+    @Transactional
+    public ClientPayment update(UUID eventId, UUID paymentId, UpdateClientPaymentRequest request) {
+        ensureEventExists(eventId);
+        ClientPayment payment = payments.findByIdAndEvent_Id(paymentId, eventId)
+                .orElseThrow(() -> new EntityNotFoundException("Pago no encontrado"));
+        if (payment.getEvent().getStatus() == EventStatus.CANCELLED) {
+            throw new IllegalArgumentException("No se pueden editar pagos de un evento cancelado.");
+        }
+
+        String operationNumber = request.operationNumber() != null
+                ? blankToNull(request.operationNumber())
+                : payment.getOperationNumber();
+        validatePaymentMethod(payment.getMethod(), operationNumber);
+
+        if (request.operationNumber() != null) {
+            payment.setOperationNumber(operationNumber);
+        }
+        if (request.internalReceiptNumber() != null) {
+            payment.setInternalReceiptNumber(blankToNull(request.internalReceiptNumber()));
+        }
+        if (request.notes() != null) {
+            payment.setNotes(blankToNull(request.notes()));
+        }
+
+        return payments.save(payment);
     }
 
     @Transactional(readOnly = true)
@@ -100,6 +132,21 @@ public class ClientPaymentService {
 
     private String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private void validatePaymentMethod(String method, String operationNumber) {
+        if (requiresOperationNumber(method) && operationNumber == null) {
+            throw new IllegalArgumentException("Ingresa el número de operación para pagos por " + method + ".");
+        }
+        if (!requiresOperationNumber(method) && operationNumber != null) {
+            throw new IllegalArgumentException("El número de operación solo aplica a BCP, BBVA o Scotiabank.");
+        }
+    }
+
+    private boolean requiresOperationNumber(String method) {
+        return "BCP".equalsIgnoreCase(method)
+                || "BBVA".equalsIgnoreCase(method)
+                || "Scotiabank".equalsIgnoreCase(method);
     }
 
     private boolean hasScheduleConflict(Event event) {

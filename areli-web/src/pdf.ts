@@ -1,5 +1,5 @@
 import { jsPDF } from 'jspdf'
-import type { ContractPreview } from './types'
+import type { Client, ClientPayment, ContractPreview, PaymentVoucherContext } from './types'
 
 const logoPath = '/areli-logo.png'
 const signatureMaxProcessWidth = 720
@@ -26,6 +26,33 @@ const apdaycStatusLabels: Record<string, string> = {
   INCLUDED: 'Incluido',
   PAID: 'Pagado',
   NOT_APPLIES: 'No aplica',
+}
+
+const defaultApdaycPayer = 'CLIENT'
+const defaultApdaycStatus = 'PENDING'
+
+function apdaycPayerLabel(payer?: string | null) {
+  const key = payer?.trim() || defaultApdaycPayer
+  return apdaycPayerLabels[key] ?? apdaycPayerLabels[defaultApdaycPayer]
+}
+
+function apdaycStatusLabel(status?: string | null) {
+  const key = status?.trim() || defaultApdaycStatus
+  return apdaycStatusLabels[key] ?? apdaycStatusLabels[defaultApdaycStatus]
+}
+
+/** Texto estándar en PDFs: Asume: Cliente - Estado: Pendiente (por defecto). */
+function formatApdaycAssumptionLine(payer?: string | null, status?: string | null) {
+  return `Asume: ${apdaycPayerLabel(payer)} - Estado: ${apdaycStatusLabel(status)}`
+}
+
+/** Monto del paquete/evento + texto fijo al costado (por defecto Cliente / Pendiente). */
+function formatAmountWithAssumption(amount: number, payer?: string | null, status?: string | null) {
+  return `${money.format(amount)} - ${formatApdaycAssumptionLine(payer, status)}`
+}
+
+function formatGuaranteePdfLine(amount: number) {
+  return formatAmountWithAssumption(amount)
 }
 
 /** Firma del arrendador lista para PDF (fondo limpio, recortada, proporción real). */
@@ -77,6 +104,30 @@ function valueOrDash(value: string | number | null | undefined) {
 
 function valueOrLine(value: string | number | null | undefined) {
   return valueOrDash(value) === '-' ? '________________________' : valueOrDash(value)
+}
+
+export function buildFullClientAddress(
+  street?: string | null,
+  province?: string | null,
+  district?: string | null,
+) {
+  return [street, province, district]
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part))
+    .join(' - ')
+}
+
+/** Arma domicilio completo para el PDF (API + datos del cliente en pantalla). */
+export function prepareContractPreviewForPdf(preview: ContractPreview, client?: Client | null): ContractPreview {
+  const street = (preview.clientStreet ?? client?.address)?.trim()
+  const province = (preview.clientProvince ?? client?.province)?.trim()
+  const district = (preview.clientDistrict ?? client?.district)?.trim()
+  const fullAddress =
+    buildFullClientAddress(street, province, district) ||
+    preview.clientAddress?.trim() ||
+    buildFullClientAddress(client?.address, client?.province, client?.district) ||
+    ''
+  return { ...preview, clientAddress: fullAddress, clientStreet: street, clientProvince: province, clientDistrict: district }
 }
 
 function formatDate(value: string) {
@@ -379,18 +430,38 @@ async function loadAssets(): Promise<PdfAssets> {
   return pdfAssetsPromise
 }
 
-function drawChrome(doc: jsPDF, assets: PdfAssets, contractCode: string) {
+const PDF_FOOTER_HEIGHT_MM = 14
+
+function pdfMaxContentY(doc: jsPDF) {
+  return doc.internal.pageSize.getHeight() - PDF_FOOTER_HEIGHT_MM - 8
+}
+
+function drawWatermark(doc: jsPDF, assets: PdfAssets) {
+  doc.addImage(assets.watermark, 'PNG', 40, 90, 130, 105, undefined, 'FAST')
+}
+
+function drawPageFooter(doc: jsPDF, documentCode: string) {
   const pageWidth = doc.internal.pageSize.getWidth()
   const pageHeight = doc.internal.pageSize.getHeight()
-
-  doc.addImage(assets.watermark, 'PNG', 40, 90, 130, 105, undefined, 'FAST')
-
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(7.5)
   doc.setTextColor(105, 105, 105)
-  doc.text(`Documento generado por sistema - Código: ${contractCode}`, pageWidth / 2, pageHeight - 9, {
+  doc.text(`Documento generado por sistema - Código: ${documentCode}`, pageWidth / 2, pageHeight - 10, {
     align: 'center',
   })
+}
+
+function stampFootersOnAllPages(doc: jsPDF, documentCode: string) {
+  const total = doc.getNumberOfPages()
+  for (let page = 1; page <= total; page += 1) {
+    doc.setPage(page)
+    drawPageFooter(doc, documentCode)
+  }
+}
+
+function drawChrome(doc: jsPDF, assets: PdfAssets, contractCode: string) {
+  drawWatermark(doc, assets)
+  drawPageFooter(doc, contractCode)
 }
 
 function addTitle(doc: jsPDF, assets: PdfAssets, event: ContractPreview) {
@@ -465,12 +536,54 @@ function addTable(doc: jsPDF, rows: Array<[string, string]>, y: number) {
 }
 
 function ensurePage(doc: jsPDF, assets: PdfAssets, y: number, needed: number, contractCode: string) {
-  if (y + needed < 282) {
+  if (y + needed <= pdfMaxContentY(doc)) {
     return y
   }
   doc.addPage()
   drawChrome(doc, assets, contractCode)
   return 18
+}
+
+/** Firma del arrendador (misma imagen del contrato) sobre la línea de sello. */
+function addLessorSignatureBlock(doc: jsPDF, assets: PdfAssets, y: number, lineX = 14, lineWidth = 76) {
+  const signatureLineY = y + 26
+  const columnMid = lineX + lineWidth / 2
+  const lessorSigMaxW = 52
+  const lessorSigMaxH = 20
+  const lessorSigBottomGapMm = -0.9
+
+  if (assets.lessorSignature) {
+    const ar = assets.lessorSignature.aspect
+    let lessorImgW = lessorSigMaxW
+    let lessorImgH = lessorSigMaxW / ar
+    if (lessorImgH > lessorSigMaxH) {
+      lessorImgH = lessorSigMaxH
+      lessorImgW = lessorSigMaxH * ar
+    }
+    doc.addImage(
+      assets.lessorSignature.dataUrl,
+      'PNG',
+      columnMid - lessorImgW / 2,
+      signatureLineY - lessorImgH - lessorSigBottomGapMm,
+      lessorImgW,
+      lessorImgH,
+      undefined,
+      'FAST',
+    )
+  }
+
+  doc.setDrawColor(45, 45, 45)
+  doc.setLineWidth(0.3)
+  doc.line(lineX, signatureLineY, lineX + lineWidth, signatureLineY)
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(9)
+  doc.setTextColor(0, 0, 0)
+  doc.text('Recepciones Areli', columnMid, signatureLineY + 6, { align: 'center' })
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(8)
+  doc.setTextColor(100, 100, 100)
+  doc.text('Sello / firma interna', columnMid, signatureLineY + 12, { align: 'center' })
+  return signatureLineY + 18
 }
 
 function estimateClauseHeight(doc: jsPDF, body: string, fontSize = 9.2) {
@@ -484,7 +597,8 @@ function addClause(doc: jsPDF, assets: PdfAssets, contractCode: string, title: s
   return addParagraph(doc, body, y)
 }
 
-export async function downloadEventContractPdf(event: ContractPreview) {
+export async function downloadEventContractPdf(event: ContractPreview, client?: Client | null) {
+  const contract = prepareContractPreviewForPdf(event, client)
   const assets = await loadAssets()
   const doc = new jsPDF({ unit: 'mm', format: 'a4' })
   const contractCode = `ARELI-${event.eventDate}-${event.eventId.slice(0, 8).toUpperCase()}`
@@ -505,7 +619,7 @@ export async function downloadEventContractPdf(event: ContractPreview) {
 
   y = addParagraph(
     doc,
-    `Conste por el presente documento el contrato de alquiler temporal de local para evento privado que celebran, de una parte, Recepciones Areli, a quien en adelante se le denominará EL ARRENDADOR; y de la otra parte, ${event.clientName}, identificado(a) con DNI/RUC N.° ${valueOrLine(event.clientDocument)}, con domicilio en ${valueOrLine(event.clientAddress)}, a quien en adelante se le denominará EL ARRENDATARIO; bajo los términos y condiciones siguientes:`,
+    `Conste por el presente documento el contrato de alquiler temporal de local para evento privado que celebran, de una parte, Recepciones Areli, a quien en adelante se le denominará EL ARRENDADOR; y de la otra parte, ${event.clientName}, identificado(a) con DNI/RUC N.° ${valueOrLine(event.clientDocument)}, con domicilio en ${valueOrLine(contract.clientAddress)}, a quien en adelante se le denominará EL ARRENDATARIO; bajo los términos y condiciones siguientes:`,
     y,
   )
 
@@ -519,11 +633,11 @@ export async function downloadEventContractPdf(event: ContractPreview) {
     ['Paquete contratado', event.packageName],
     ['Capacidad máxima', capacityText],
     ['Monto total', money.format(event.totalAmount)],
-    ['Garantía por daños', money.format(event.guaranteeAmount)],
+    ['Garantía por daños', formatGuaranteePdfLine(event.guaranteeAmount)],
     ['Contacto del cliente', valueOrDash(event.clientPhone)],
     [
       'Pago APDAYC',
-      `${money.format(event.apdaycAmount ?? 0)} - Asume: ${apdaycPayerLabels[event.apdaycPayer] ?? event.apdaycPayer} - Estado: ${apdaycStatusLabels[event.apdaycStatus] ?? event.apdaycStatus}`,
+      formatAmountWithAssumption(event.apdaycAmount ?? 0, event.apdaycPayer, event.apdaycStatus),
     ],
   ], y)
 
@@ -570,7 +684,7 @@ export async function downloadEventContractPdf(event: ContractPreview) {
     },
     {
       title: 'CLÁUSULA DÉCIMO PRIMERA: APDAYC, IGV, PERMISOS Y DERECHOS',
-      body: `${event.apdaycClause} Registro APDAYC del evento: monto ${money.format(event.apdaycAmount ?? 0)}, responsable ${apdaycPayerLabels[event.apdaycPayer] ?? event.apdaycPayer}, estado ${apdaycStatusLabels[event.apdaycStatus] ?? event.apdaycStatus}. Observación: ${valueOrDash(event.apdaycNotes)}.`,
+      body: `${event.apdaycClause} Registro APDAYC del evento: monto ${money.format(event.apdaycAmount ?? 0)}, ${formatApdaycAssumptionLine(event.apdaycPayer, event.apdaycStatus)}. Observación: ${valueOrDash(event.apdaycNotes)}.`,
     },
     {
       title: 'CLÁUSULA DÉCIMO SEGUNDA: PERSONAL, PROVEEDORES Y COORDINACIÓN',
@@ -655,8 +769,8 @@ export async function downloadEventContractPdf(event: ContractPreview) {
     ['Ambiente', event.floorName],
     ['Precio del paquete', money.format(event.totalAmount)],
     ['Capacidad máxima', capacityText],
-    ['Garantía', money.format(event.guaranteeAmount)],
-    ['APDAYC / derechos', `${apdaycPayerLabels[event.apdaycPayer] ?? event.apdaycPayer} - ${apdaycStatusLabels[event.apdaycStatus] ?? event.apdaycStatus}`],
+    ['Garantía', formatGuaranteePdfLine(event.guaranteeAmount)],
+    ['APDAYC / derechos', formatAmountWithAssumption(event.apdaycAmount ?? 0, event.apdaycPayer, event.apdaycStatus)],
   ], y)
 
   y = addHeading(doc, 'SERVICIOS INCLUIDOS', y)
@@ -671,4 +785,197 @@ export async function downloadEventContractPdf(event: ContractPreview) {
   )
 
   await downloadPdfBlob(doc.output('blob'), contractPdfFilename(event, contractCode))
+}
+
+const paymentTypePdfLabels: Record<string, string> = {
+  EVENT_PAYMENT: 'Pago del evento',
+  APDAYC: 'APDAYC',
+  GUARANTEE: 'Garantía',
+}
+
+function paymentVoucherCode(payment: ClientPayment) {
+  const manual = payment.internalReceiptNumber?.trim()
+  if (manual) {
+    return manual
+  }
+  const suffix = payment.id.replace(/-/g, '').slice(0, 8).toUpperCase()
+  return `ARELI-PAGO-${payment.paymentDate}-${suffix}`
+}
+
+function voucherPdfFilename(voucherCode: string, clientName: string) {
+  const codePart = slug(voucherCode) || 'comprobante'
+  const namePart = slug(clientName) || 'cliente'
+  return `comprobante-${codePart}-${namePart}.pdf`.replace(/[^a-zA-Z0-9._-]/g, '-')
+}
+
+function addVoucherTitle(doc: jsPDF, assets: PdfAssets, voucherCode: string) {
+  const pageWidth = doc.internal.pageSize.getWidth()
+  doc.addImage(assets.logo, 'PNG', pageWidth / 2 - 18, 10, 36, 29, undefined, 'FAST')
+
+  doc.setFont('helvetica', 'bold')
+  doc.setTextColor(31, 78, 121)
+  doc.setFontSize(13)
+  doc.text('ARELI', pageWidth / 2, 45, { align: 'center' })
+  doc.setFontSize(10)
+  doc.text('SALÓN DE RECEPCIONES', pageWidth / 2, 51, { align: 'center' })
+
+  doc.setTextColor(0, 0, 0)
+  doc.setFontSize(14)
+  doc.text('COMPROBANTE INTERNO DE PAGO', pageWidth / 2, 62, { align: 'center' })
+  doc.setTextColor(196, 145, 0)
+  doc.setFontSize(11)
+  doc.text(`N.° ${voucherCode}`, pageWidth / 2, 70, { align: 'center' })
+}
+
+function addAmountHighlight(doc: jsPDF, label: string, amount: number, y: number) {
+  const x = 14
+  const width = 182
+  const height = 22
+
+  doc.setFillColor(255, 244, 214)
+  doc.setDrawColor(185, 153, 82)
+  doc.setLineWidth(0.35)
+  doc.roundedRect(x, y, width, height, 2, 2, 'FD')
+
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(9)
+  doc.setTextColor(80, 80, 80)
+  doc.text(label, pageWidthCenter(doc), y + 7, { align: 'center' })
+
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(18)
+  doc.setTextColor(31, 78, 121)
+  doc.text(money.format(amount), pageWidthCenter(doc), y + 16, { align: 'center' })
+
+  return y + height + 8
+}
+
+function pageWidthCenter(doc: jsPDF) {
+  return doc.internal.pageSize.getWidth() / 2
+}
+
+function paymentOperationNumber(payment: ClientPayment): string | undefined {
+  const direct = payment.operationNumber?.trim()
+  if (direct) return direct
+  const legacy = (payment as { operation_number?: string }).operation_number?.trim()
+  return legacy || undefined
+}
+
+function paymentMethodRequiresOperationNumber(method: string) {
+  const normalized = method.trim().toUpperCase()
+  return normalized === 'BCP' || normalized === 'BBVA' || normalized === 'SCOTIABANK'
+}
+
+function paymentMethodLine(payment: ClientPayment) {
+  const method = String(payment.method ?? '')
+  const operationNumber = paymentOperationNumber(payment)
+  if (operationNumber) {
+    return `${method} · Op. ${operationNumber}`
+  }
+  return valueOrDash(method)
+}
+
+function paymentDetailRows(
+  payment: ClientPayment,
+  apdayc?: { payer?: string | null; status?: string | null },
+): Array<[string, string]> {
+  const countsLabel = payment.countsTowardsEventTotal ? 'Sí — suma al total del evento' : 'No — control interno'
+  const method = String(payment.method ?? '')
+  const operationNumber = paymentOperationNumber(payment)
+  const rows: Array<[string, string]> = [
+    ['Concepto', valueOrDash(payment.concept)],
+    ['Tipo de registro', paymentTypePdfLabels[payment.paymentType] ?? payment.paymentType],
+    ['Fecha del pago', formatDate(payment.paymentDate)],
+    ['Medio de pago', paymentMethodLine(payment)],
+  ]
+  if (payment.paymentType === 'GUARANTEE' || payment.paymentType === 'APDAYC') {
+    rows.push(['Garantía / APDAYC', formatAmountWithAssumption(payment.amount, apdayc?.payer, apdayc?.status)])
+  }
+  if (paymentMethodRequiresOperationNumber(method)) {
+    rows.push(['Número de operación', operationNumber ?? '— (no registrado en el sistema)'])
+  } else if (operationNumber) {
+    rows.push(['Número de operación', operationNumber])
+  }
+  rows.push(['Suma al evento', countsLabel])
+  return rows
+}
+
+export async function downloadPaymentVoucherPdf(ctx: PaymentVoucherContext) {
+  const assets = await loadAssets()
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' })
+  const voucherCode = paymentVoucherCode(ctx.payment)
+  const documentCode = `DOC-${voucherCode}`
+
+  drawChrome(doc, assets, documentCode)
+  addVoucherTitle(doc, assets, voucherCode)
+
+  const payment = ctx.payment
+
+  let y = 80
+  y = addTable(
+    doc,
+    [
+      ['Fecha de emisión', longDate.format(new Date())],
+      ['Cliente', ctx.clientName],
+      ['DNI / RUC', valueOrDash(ctx.clientDocument)],
+      ['Contacto', valueOrDash(ctx.clientPhone)],
+    ],
+    y,
+  )
+
+  y = addHeading(doc, 'DATOS DEL EVENTO', y)
+  y = addTable(
+    doc,
+    [
+      ['Código del evento', ctx.eventCode],
+      ['Evento', ctx.eventTitle],
+      ['Ambiente', ctx.floorName],
+      ['Fecha del evento', formatDate(ctx.eventDate)],
+      ['Horario', `Desde ${ctx.startTime} hasta ${ctx.endTime}`],
+      ['Monto total del evento', money.format(ctx.totalAmount)],
+    ],
+    y,
+  )
+
+  y = addHeading(doc, 'DETALLE DEL PAGO', y)
+  y = addAmountHighlight(doc, 'MONTO REGISTRADO', payment.amount, y)
+  y = addTable(
+    doc,
+    paymentDetailRows(payment, { payer: ctx.apdaycPayer, status: ctx.apdaycStatus }),
+    y,
+  )
+
+  if (payment.notes?.trim()) {
+    y = addHeading(doc, 'OBSERVACIONES', y)
+    y = addParagraph(doc, payment.notes.trim(), y)
+  }
+
+  y = addHeading(doc, 'RESUMEN FINANCIERO DEL EVENTO', y)
+  y = ensurePage(doc, assets, y, 95, documentCode)
+  y = addTable(
+    doc,
+    [
+      ['Total pactado', money.format(ctx.totalAmount)],
+      ['Pagado a la fecha (incluye este pago)', money.format(ctx.paidToDate)],
+      ['Saldo pendiente', money.format(ctx.balanceAfter)],
+    ],
+    y,
+  )
+
+  y += 10
+  y = ensurePage(doc, assets, y, 58, documentCode)
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(8.2)
+  doc.setTextColor(90, 90, 90)
+  const disclaimer =
+    'Este documento es un comprobante interno emitido por Recepciones Areli para constancia del pago registrado en el sistema. No sustituye boleta, factura ni comprobante tributario ante SUNAT. Conserve este archivo para su control y puede compartirlo con el cliente como constancia del abono recibido.'
+  y = addParagraph(doc, disclaimer, y, 8.2)
+
+  y += 8
+  y = ensurePage(doc, assets, y, 44, documentCode)
+  y = addLessorSignatureBlock(doc, assets, y)
+
+  stampFootersOnAllPages(doc, documentCode)
+
+  await downloadPdfBlob(doc.output('blob'), voucherPdfFilename(voucherCode, ctx.clientName))
 }

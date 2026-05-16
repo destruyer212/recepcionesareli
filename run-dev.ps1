@@ -24,11 +24,11 @@ Start-Process -FilePath "cmd.exe" `
 Start-Sleep -Seconds 3
 
 Start-Process -FilePath "cmd.exe" `
-    -ArgumentList "/c npm run dev -- --host 127.0.0.1 --port 5173" `
+    -ArgumentList "/c npm run dev -- --host localhost --port 5173" `
     -WorkingDirectory $webDir `
     -WindowStyle Hidden `
     -RedirectStandardOutput (Join-Path $webDir "areli-web-5173.out.log") `
     -RedirectStandardError (Join-Path $webDir "areli-web-5173.err.log")
 
 Write-Host "Backend:  http://localhost:8083/api/health"
-Write-Host "Frontend: http://localhost:5173"
+Write-Host "Frontend: http://localhost:5173 (tambien http://127.0.0.1:5173 si CORS lo permite)"

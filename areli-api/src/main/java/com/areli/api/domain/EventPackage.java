@@ -66,6 +66,30 @@ public class EventPackage extends BaseEntity {
         this.includedCapacity = includedCapacity;
     }
 
+    public BigDecimal getExtraGuestPrice() {
+        return extraGuestPrice;
+    }
+
+    public void setExtraGuestPrice(BigDecimal extraGuestPrice) {
+        this.extraGuestPrice = extraGuestPrice;
+    }
+
+    public BigDecimal getDepositAmount() {
+        return depositAmount;
+    }
+
+    public void setDepositAmount(BigDecimal depositAmount) {
+        this.depositAmount = depositAmount;
+    }
+
+    public BigDecimal getDepositPercent() {
+        return depositPercent;
+    }
+
+    public void setDepositPercent(BigDecimal depositPercent) {
+        this.depositPercent = depositPercent;
+    }
+
     public BigDecimal getGuaranteeAmount() {
         return guaranteeAmount;
     }
