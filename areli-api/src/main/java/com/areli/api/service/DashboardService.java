@@ -1,6 +1,7 @@
 package com.areli.api.service;
 
 import com.areli.api.repository.ClientRepository;
+import com.areli.api.repository.ClientPaymentRepository;
 import com.areli.api.repository.EventPackageRepository;
 import com.areli.api.repository.EventRepository;
 import com.areli.api.repository.FloorRepository;
@@ -19,12 +20,14 @@ public class DashboardService {
     private final FloorRepository floors;
     private final EventPackageRepository packages;
     private final EventRepository events;
+    private final ClientPaymentRepository payments;
 
-    public DashboardService(ClientRepository clients, FloorRepository floors, EventPackageRepository packages, EventRepository events) {
+    public DashboardService(ClientRepository clients, FloorRepository floors, EventPackageRepository packages, EventRepository events, ClientPaymentRepository payments) {
         this.clients = clients;
         this.floors = floors;
         this.packages = packages;
         this.events = events;
+        this.payments = payments;
     }
 
     @Transactional(readOnly = true)
@@ -42,7 +45,7 @@ public class DashboardService {
                 packages.count(),
                 events.count(),
                 events.countByEventDateBetween(today, today.plusDays(30)),
-                events.sumTotalContracted(),
+                payments.sumAllEventPayments().subtract(events.sumCancellationRefunded()),
                 floorMetrics);
     }
 }

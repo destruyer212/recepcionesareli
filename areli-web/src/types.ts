@@ -3,13 +3,11 @@ export type EventStatus =
   | 'INQUIRY'
   | 'SEPARATED'
   | 'CONTRACTED'
-  | 'PREPARING'
-  | 'COMPLETED'
-  | 'CLOSED'
   | 'CANCELLED'
-  | 'RESCHEDULED'
 
 export type CancellationType = 'CLIENT_REQUEST' | 'FORCE_MAJEURE' | 'NO_SHOW' | 'RESCHEDULE_REQUEST_REJECTED'
+export type CancellationPaymentStatus = 'ADELANTO_RETENIDO' | 'DEVOLUCION_PARCIAL' | 'DEVOLUCION_TOTAL' | 'SIN_ADELANTO'
+export type PaymentType = 'EVENT_PAYMENT' | 'APDAYC' | 'GUARANTEE'
 export type DocumentType = 'DNI' | 'RUC'
 
 export type ApdaycPayer = 'CLIENT' | 'ARELI' | 'SHARED'
@@ -40,6 +38,12 @@ export type Client = {
   phone?: string
   whatsapp?: string
   email?: string
+  address?: string
+  province?: string
+  district?: string
+  provinceUbigeo?: string
+  districtUbigeo?: string
+  notes?: string
 }
 
 export type Floor = {
@@ -61,10 +65,13 @@ export type EventPackage = {
   guaranteeAmount?: number
   includedServices?: string
   terms?: string
+  active: boolean
 }
 
 export type EventItem = {
   id: string
+  clientId: string
+  packageId?: string
   clientName: string
   floorName: string
   packageName?: string
@@ -86,7 +93,44 @@ export type EventItem = {
   cancellationNoticeDays?: number
   retainedAdvanceAmount?: number
   cancellationNotes?: string
+  paidAmount: number
+  balanceAmount: number
+  cancellationAdvanceAmount?: number
+  cancellationRetainedAmount?: number
+  cancellationRefundedAmount?: number
+  cancellationPaymentStatus?: CancellationPaymentStatus
+  cancellationReason?: string
+  cancellationDate?: string
+  cancellationObservation?: string
+  rescheduled?: boolean
+  originalEventDate?: string
+  originalStartTime?: string
+  originalEndTime?: string
   createdAt?: string
+}
+
+export type ClientPayment = {
+  id: string
+  eventId: string
+  paymentDate: string
+  concept: string
+  amount: number
+  method: string
+  paymentType: PaymentType
+  countsTowardsEventTotal: boolean
+  internalReceiptNumber?: string
+  notes?: string
+  createdAt?: string
+}
+
+export type ClientPaymentPayload = {
+  paymentDate: string
+  concept: string
+  amount: number
+  method: string
+  paymentType?: PaymentType
+  internalReceiptNumber?: string
+  notes?: string
 }
 
 export type ContractPreview = {
@@ -217,6 +261,17 @@ export type InventoryPayload = {
   observacion?: string
 }
 
+export type EventPackagePayload = {
+  name: string
+  eventType?: string
+  basePrice: number
+  includedCapacity?: number
+  guaranteeAmount?: number
+  includedServices?: string
+  terms?: string
+  active?: boolean
+}
+
 export type WorkerContact = {
   id: string
   category: WorkerCategory
@@ -277,7 +332,32 @@ export type ClientPayload = {
   whatsapp?: string
   email?: string
   address?: string
+  province?: string
+  district?: string
+  provinceUbigeo?: string
+  districtUbigeo?: string
   notes?: string
+}
+
+export type PeruProvince = {
+  ubigeo: string
+  name: string
+  departmentUbigeo: string
+  departmentName: string
+}
+
+export type PeruDistrict = {
+  ubigeo: string
+  name: string
+  provinceUbigeo: string
+  provinceName: string
+  departmentUbigeo: string
+  departmentName: string
+}
+
+export type PeruLocations = {
+  provinces: PeruProvince[]
+  districts: PeruDistrict[]
 }
 
 export type ClientLookupResponse = {
@@ -291,6 +371,10 @@ export type AppSettings = {
   peruApiTokenReady: boolean
   peruApiTokenSource: string
   peruApiTokenHint: string
+  geminiApiKeyReady: boolean
+  geminiApiKeySource: string
+  geminiApiKeyHint: string
+  geminiModel: string
   rescheduleMinNoticeDays: number
   rescheduleMaxMonths: number
   cancellationRetentionNoticeDays: number
@@ -319,4 +403,26 @@ export type AiResponse = {
   provider: string
   model: string
   result: string
+}
+
+export type IaEventoDatos = {
+  tipoEvento?: string
+  fecha?: string
+  hora?: string
+  clientePrincipal?: string
+  clienteSecundario?: string
+  cantidadInvitados?: number | null
+  local?: string
+  servicios?: string[]
+  personal?: string[]
+  telefono?: string
+  observaciones?: string
+}
+
+export type IaEventoResponse = {
+  accion: string
+  datos: IaEventoDatos
+  faltantes: string[]
+  mensajeUsuario: string
+  confirmacionNecesaria: boolean
 }

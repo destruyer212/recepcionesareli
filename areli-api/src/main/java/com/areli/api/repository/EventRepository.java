@@ -44,8 +44,11 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
 
     long countByEventDateBetween(LocalDate from, LocalDate to);
 
-    @Query("select coalesce(sum(e.totalAmount), 0) from Event e")
+    @Query("select coalesce(sum(e.totalAmount), 0) from Event e where e.status = com.areli.api.domain.Enums.EventStatus.CONTRACTED")
     java.math.BigDecimal sumTotalContracted();
+
+    @Query("select coalesce(sum(e.cancellationRefundedAmount), 0) from Event e")
+    java.math.BigDecimal sumCancellationRefunded();
 
     @Query("""
             select e.floor.name, count(e)
@@ -60,7 +63,10 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
             from Event e
             where e.floor.id = :floorId
               and e.eventDate between :from and :to
-              and e.status <> com.areli.api.domain.Enums.EventStatus.CANCELLED
+              and e.status in (
+                  com.areli.api.domain.Enums.EventStatus.SEPARATED,
+                  com.areli.api.domain.Enums.EventStatus.CONTRACTED
+              )
             order by e.eventDate asc, e.startTime asc
             """)
     List<Event> findScheduleCandidates(

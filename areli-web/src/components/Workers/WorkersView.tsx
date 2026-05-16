@@ -1,11 +1,36 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Check, ChevronDown, ClipboardList, Phone, Save, Search, Trash2, Users } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+import {
+  Briefcase,
+  CalendarCheck,
+  Camera,
+  ChefHat,
+  Check,
+  ChevronDown,
+  ClipboardList,
+  GlassWater,
+  Music,
+  Paintbrush,
+  PartyPopper,
+  Phone,
+  PhoneCall,
+  RefreshCw,
+  Save,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
+  UserCheck,
+  Users,
+  Video,
+} from 'lucide-react'
 import { api } from '../../api'
 import type { WorkerCategory, WorkerContact } from '../../types'
 
 type FixedWorkerRole = Exclude<WorkerCategory, `MOZO_${number}`>
 type WorkerRoleMode = FixedWorkerRole | 'MOZOS'
+type WorkerRosterTab = WorkerRoleMode | 'ALL'
 
 type WorkerRoleConfig = {
   id: FixedWorkerRole
@@ -41,6 +66,24 @@ const workerRoleOptions: WorkerRoleOption[] = [
   { id: 'MOZOS', label: 'Mozos', hint: 'Sub lista numerada para Mozo 1, Mozo 2, Mozo 3 y los que necesites.' },
   ...workerRoles.slice(7),
 ]
+
+const workerRoleTabIcons: Record<WorkerRoleMode, LucideIcon> = {
+  EVENT_PLANNER: Briefcase,
+  COORDINADOR_EVENTO: CalendarCheck,
+  DJ: Music,
+  FOTOGRAFO: Camera,
+  VIDEOGRAFO: Video,
+  SEGURIDAD: ShieldCheck,
+  ANFITRIONA: UserCheck,
+  MOZOS: Users,
+  BARMAN: GlassWater,
+  HORA_LOCA: PartyPopper,
+  DECORACION: Paintbrush,
+  BOCADITOS: Sparkles,
+  COCINA: ChefHat,
+  LIMPIEZA: ClipboardList,
+  APOYO: Users,
+}
 
 const legacyWorkerLabels: Record<string, string> = {
   MOZOS: 'Mozos (anterior)',
@@ -82,6 +125,11 @@ function matchesSearch(item: WorkerContact, query: string) {
     .join(' ')
     .toLowerCase()
     .includes(needle)
+}
+
+function phoneHref(phone?: string) {
+  const cleanPhone = (phone ?? '').replace(/[^\d+]/g, '')
+  return cleanPhone ? `tel:${cleanPhone}` : ''
 }
 
 function WorkerRolePicker({
@@ -172,28 +220,34 @@ export function WorkersView({ mode = 'registered' }: { mode?: 'registered' | 'cr
   const [directory, setDirectory] = useState<WorkerContact[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [editingWorker, setEditingWorker] = useState<WorkerContact | null>(null)
+  const [editRoleMode, setEditRoleMode] = useState<WorkerRoleMode>('EVENT_PLANNER')
+  const [editMozoSlot, setEditMozoSlot] = useState(1)
+  const [editName, setEditName] = useState('')
+  const [editPhone, setEditPhone] = useState('')
+  const [editNotes, setEditNotes] = useState('')
+  const [selectedRosterTab, setSelectedRosterTab] = useState<WorkerRosterTab>('ALL')
 
-  useEffect(() => {
-    let active = true
-    async function loadWorkers() {
-      setLoading(true)
-      try {
-        const workers = await api.workers()
-        if (active) {
-          setDirectory(workers)
-          setMozoSlot(nextMozoNumber(workers))
-        }
-      } catch (error) {
-        if (active) setNotice(error instanceof Error ? error.message : 'No se pudo cargar el directorio.')
-      } finally {
-        if (active) setLoading(false)
+  const loadWorkers = useCallback(async (showNotice = false) => {
+    setLoading(true)
+    setNotice('')
+    try {
+      const workers = await api.workers()
+      setDirectory(workers)
+      setMozoSlot(nextMozoNumber(workers))
+      if (showNotice) {
+        setNotice(`Equipo actualizado: ${workers.length} contactos activos.`)
       }
-    }
-    void loadWorkers()
-    return () => {
-      active = false
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'No se pudo cargar el directorio.')
+    } finally {
+      setLoading(false)
     }
   }, [])
+
+  useEffect(() => {
+    void loadWorkers()
+  }, [loadWorkers])
 
   const selectedCategory: WorkerCategory =
     roleMode === 'MOZOS' ? (`MOZO_${mozoSlot}` as WorkerCategory) : roleMode
@@ -227,10 +281,40 @@ export function WorkersView({ mode = 'registered' }: { mode?: 'registered' | 'cr
   )
   const highestMozoNumber = Math.max(0, ...directory.map((item) => mozoNumber(String(item.category))))
   const mozoSlotOptions = Array.from({ length: Math.max(12, highestMozoNumber + 3, mozoSlot) }, (_, index) => index + 1)
+  const editMozoSlotOptions = Array.from({ length: Math.max(12, highestMozoNumber + 3, editMozoSlot) }, (_, index) => index + 1)
   const officialCount = directory.filter((item) => {
     const category = String(item.category)
     return isMozoCategory(category) || workerRoles.some((role) => role.id === category)
   }).length
+  const visibleOfficialCount = fixedContacts.reduce((total, role) => total + role.contacts.length, 0) + mozoContacts.length
+  const rosterTabs = useMemo(
+    () => [
+      {
+        id: 'ALL' as const,
+        label: 'Todos',
+        hint: 'Equipo completo',
+        icon: ClipboardList,
+        count: visibleOfficialCount,
+      },
+      ...workerRoleOptions.map((role) => ({
+        id: role.id,
+        label: role.label,
+        hint: role.hint,
+        icon: workerRoleTabIcons[role.id],
+        count:
+          role.id === 'MOZOS'
+            ? mozoContacts.length
+            : fixedContacts.find((item) => item.id === role.id)?.contacts.length ?? 0,
+      })),
+    ],
+    [fixedContacts, mozoContacts.length, visibleOfficialCount],
+  )
+  const selectedRosterOption = rosterTabs.find((tab) => tab.id === selectedRosterTab) ?? rosterTabs[0]
+  const visibleFixedContacts =
+    selectedRosterTab === 'ALL'
+      ? fixedContacts
+      : fixedContacts.filter((role) => role.id === selectedRosterTab)
+  const showMozoRoster = selectedRosterTab === 'ALL' || selectedRosterTab === 'MOZOS'
 
   function selectRole(nextRole: WorkerRoleMode) {
     setRoleMode(nextRole)
@@ -288,7 +372,51 @@ export function WorkersView({ mode = 'registered' }: { mode?: 'registered' | 'cr
     }
   }
 
+  function startEditWorker(item: WorkerContact) {
+    const category = String(item.category)
+    if (isMozoCategory(category)) {
+      setEditRoleMode('MOZOS')
+      setEditMozoSlot(mozoNumber(category))
+    } else {
+      setEditRoleMode((workerRoles.some((role) => role.id === category) ? category : 'EVENT_PLANNER') as WorkerRoleMode)
+      setEditMozoSlot(nextMozoNumber(directory))
+    }
+    setEditingWorker(item)
+    setEditName(item.name ?? '')
+    setEditPhone(item.phone ?? '')
+    setEditNotes(item.notes ?? '')
+  }
+
+  async function saveEditedWorker(event: FormEvent) {
+    event.preventDefault()
+    if (!editingWorker) return
+    if (!editName.trim()) {
+      setNotice('Completa el nombre del contacto.')
+      return
+    }
+    const nextCategory: WorkerCategory =
+      editRoleMode === 'MOZOS' ? (`MOZO_${editMozoSlot}` as WorkerCategory) : editRoleMode
+    setBusy(true)
+    try {
+      const updated = await api.updateWorker(editingWorker.id, {
+        category: nextCategory,
+        name: editName.trim(),
+        phone: editPhone.trim() || undefined,
+        notes: editNotes.trim() || undefined,
+      })
+      const nextDirectory = directory.map((item) => (item.id === updated.id ? updated : item))
+      setDirectory(nextDirectory)
+      setEditingWorker(null)
+      setNotice('Contacto actualizado.')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'No se pudo actualizar el contacto.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   function renderContactCard(item: WorkerContact) {
+    const callHref = phoneHref(item.phone)
     return (
       <article className="worker-card" key={item.id}>
         <header>
@@ -296,10 +424,21 @@ export function WorkersView({ mode = 'registered' }: { mode?: 'registered' | 'cr
             <span>{labelForCategory(String(item.category))}</span>
             <h3>{item.name}</h3>
           </div>
-          <button className="btn icon danger" disabled={busy} onClick={() => void removeWorker(item.id)} type="button">
-            <Trash2 size={14} />
-            Quitar
-          </button>
+          <div className="worker-card-actions">
+            {callHref && (
+              <a className="btn icon call" href={callHref}>
+                <PhoneCall size={14} />
+                Llamar
+              </a>
+            )}
+            <button className="btn icon" disabled={busy} onClick={() => startEditWorker(item)} type="button">
+              Editar
+            </button>
+            <button className="btn icon danger" disabled={busy} onClick={() => void removeWorker(item.id)} type="button">
+              <Trash2 size={14} />
+              Quitar
+            </button>
+          </div>
         </header>
         <p>
           <Phone size={14} />
@@ -408,19 +547,60 @@ export function WorkersView({ mode = 'registered' }: { mode?: 'registered' | 'cr
             <h2>Trabajadores registrados</h2>
             <p className="settings-intro">Consulta el equipo oficial por cargo, mozos numerados y contactos anteriores.</p>
           </div>
+          <div className="workers-toolbar-actions">
           <label className="worker-search">
             <Search size={15} />
             <input placeholder="Buscar por nombre, cargo o teléfono" value={search} onChange={(event) => setSearch(event.target.value)} />
           </label>
+          <button className="btn ghost" disabled={loading || busy} onClick={() => void loadWorkers(true)} type="button">
+            <RefreshCw size={15} />
+            Recargar equipo
+          </button>
+          </div>
         </div>
 
         {notice && <p className="message ok">{notice}</p>}
 
+        {!loading && (
+          <>
+            <div className="worker-roster-tabs-shell">
+              <div className="worker-roster-tabs" role="tablist" aria-label="Filtrar trabajadores por puesto">
+                {rosterTabs.map((tab) => {
+                  const Icon = tab.icon
+                  const active = selectedRosterTab === tab.id
+                  return (
+                    <button
+                      aria-selected={active}
+                      className={`worker-roster-tab ${active ? 'active' : ''}`}
+                      key={tab.id}
+                      onClick={() => setSelectedRosterTab(tab.id)}
+                      role="tab"
+                      type="button"
+                    >
+                      <Icon size={18} />
+                      <span>{tab.label}</span>
+                      <small>{tab.count}</small>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            <div className="worker-roster-focus">
+              <div>
+                <strong>{selectedRosterOption.label}</strong>
+                <span>{selectedRosterOption.hint}</span>
+              </div>
+              <em>{selectedRosterOption.count} contactos</em>
+            </div>
+          </>
+        )}
+
         {loading && <p className="empty">Cargando equipo oficial...</p>}
         {!loading && (
-          <div className="workers-role-grid">
-            {fixedContacts.slice(0, 7).map(renderRoleSection)}
+          <div className={`workers-role-grid ${selectedRosterTab === 'ALL' ? '' : 'filtered'}`}>
+            {visibleFixedContacts.slice(0, 7).map(renderRoleSection)}
 
+            {showMozoRoster && (
             <section className="worker-role-card mozos-role-card">
               <header>
                 <div className="worker-role-icon">
@@ -436,12 +616,13 @@ export function WorkersView({ mode = 'registered' }: { mode?: 'registered' | 'cr
                 {mozoContacts.length === 0 ? <p className="empty compact">Aun no hay mozos asignados.</p> : mozoContacts.map(renderContactCard)}
               </div>
             </section>
+            )}
 
-            {fixedContacts.slice(7).map(renderRoleSection)}
+            {visibleFixedContacts.slice(7).map(renderRoleSection)}
           </div>
         )}
 
-        {legacyContacts.length > 0 && (
+        {selectedRosterTab === 'ALL' && legacyContacts.length > 0 && (
           <div className="worker-legacy-box">
             <h3>Contactos anteriores</h3>
             <p>Quedaron guardados con la clasificacion antigua. Puedes quitarlos o volver a crearlos con el puesto oficial.</p>
@@ -449,6 +630,63 @@ export function WorkersView({ mode = 'registered' }: { mode?: 'registered' | 'cr
           </div>
         )}
       </div>
+      )}
+
+      {editingWorker && (
+        <div className="quick-modal" role="presentation">
+          <div className="modal-2026 worker-edit-modal">
+            <div className="modal-2026-header">
+              <div>
+                <p className="eyebrow">Equipo oficial</p>
+                <h3>Editar trabajador</h3>
+              </div>
+              <button className="btn ghost" onClick={() => setEditingWorker(null)} type="button">
+                Cerrar
+              </button>
+            </div>
+            <form onSubmit={saveEditedWorker}>
+              <div className="form-grid">
+                <label className="full worker-role-picker-label">
+                  Puesto oficial
+                  <WorkerRolePicker disabled={busy} value={editRoleMode} onChange={setEditRoleMode} />
+                </label>
+                {editRoleMode === 'MOZOS' && (
+                  <label className="worker-mozo-slot-label">
+                    Sub puesto
+                    <select value={editMozoSlot} onChange={(event) => setEditMozoSlot(Number(event.target.value))}>
+                      {editMozoSlotOptions.map((slot) => (
+                        <option key={slot} value={slot}>
+                          Mozo {slot}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <label>
+                  Nombre
+                  <input onChange={(event) => setEditName(event.target.value)} value={editName} required />
+                </label>
+                <label>
+                  Telefono / WhatsApp
+                  <input inputMode="tel" onChange={(event) => setEditPhone(event.target.value)} value={editPhone} />
+                </label>
+                <label className="full">
+                  Notas
+                  <textarea onChange={(event) => setEditNotes(event.target.value)} value={editNotes} />
+                </label>
+              </div>
+              <div className="form-actions modal-2026-actions">
+                <button className="btn ghost" onClick={() => setEditingWorker(null)} type="button">
+                  Cancelar
+                </button>
+                <button className="btn primary" disabled={busy} type="submit">
+                  <Save size={16} />
+                  {busy ? 'Guardando...' : 'Guardar cambios'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </section>
   )

@@ -2,6 +2,7 @@ package com.areli.api.domain;
 
 import com.areli.api.common.BaseEntity;
 import com.areli.api.domain.Enums.GuaranteeStatus;
+import com.areli.api.domain.Enums.PaymentType;
 import com.areli.api.domain.Enums.StaffPaymentStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -19,7 +20,7 @@ public final class PaymentAndOperations {
     private PaymentAndOperations() {
     }
 
-    @Entity
+    @Entity(name = "ClientPayment")
     @Table(name = "client_payments")
     public static class ClientPayment extends BaseEntity {
         @ManyToOne(fetch = FetchType.LAZY)
@@ -38,10 +39,89 @@ public final class PaymentAndOperations {
         @Column(nullable = false)
         private String method;
 
+        @Enumerated(EnumType.STRING)
+        @Column(nullable = false)
+        private PaymentType paymentType = PaymentType.EVENT_PAYMENT;
+
+        @Column(nullable = false)
+        private boolean countsTowardsEventTotal = true;
+
         private String internalReceiptNumber;
 
         @Column(columnDefinition = "text")
         private String notes;
+
+        public Event getEvent() {
+            return event;
+        }
+
+        public void setEvent(Event event) {
+            this.event = event;
+        }
+
+        public LocalDate getPaymentDate() {
+            return paymentDate;
+        }
+
+        public void setPaymentDate(LocalDate paymentDate) {
+            this.paymentDate = paymentDate;
+        }
+
+        public String getConcept() {
+            return concept;
+        }
+
+        public void setConcept(String concept) {
+            this.concept = concept;
+        }
+
+        public BigDecimal getAmount() {
+            return amount;
+        }
+
+        public void setAmount(BigDecimal amount) {
+            this.amount = amount;
+        }
+
+        public String getMethod() {
+            return method;
+        }
+
+        public void setMethod(String method) {
+            this.method = method;
+        }
+
+        public PaymentType getPaymentType() {
+            return paymentType;
+        }
+
+        public void setPaymentType(PaymentType paymentType) {
+            this.paymentType = paymentType;
+        }
+
+        public boolean isCountsTowardsEventTotal() {
+            return countsTowardsEventTotal;
+        }
+
+        public void setCountsTowardsEventTotal(boolean countsTowardsEventTotal) {
+            this.countsTowardsEventTotal = countsTowardsEventTotal;
+        }
+
+        public String getInternalReceiptNumber() {
+            return internalReceiptNumber;
+        }
+
+        public void setInternalReceiptNumber(String internalReceiptNumber) {
+            this.internalReceiptNumber = internalReceiptNumber;
+        }
+
+        public String getNotes() {
+            return notes;
+        }
+
+        public void setNotes(String notes) {
+            this.notes = notes;
+        }
     }
 
     @Entity

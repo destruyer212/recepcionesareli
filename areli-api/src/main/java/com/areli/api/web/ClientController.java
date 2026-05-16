@@ -64,6 +64,10 @@ public class ClientController {
         client.setWhatsapp(request.whatsapp());
         client.setEmail(request.email());
         client.setAddress(request.address());
+        client.setProvince(request.province());
+        client.setDistrict(request.district());
+        client.setProvinceUbigeo(request.provinceUbigeo());
+        client.setDistrictUbigeo(request.districtUbigeo());
         client.setNotes(request.notes());
         return ClientResponse.from(clients.save(client));
     }

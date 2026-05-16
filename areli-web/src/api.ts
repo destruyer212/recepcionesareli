@@ -2,6 +2,8 @@ import type {
   AiResponse,
   Client,
   ClientLookupResponse,
+  ClientPayment,
+  ClientPaymentPayload,
   ClientPayload,
   AppSettings,
   ContractPreview,
@@ -9,6 +11,7 @@ import type {
   EventStaffAssignment,
   EventStaffAssignmentPayload,
   EventItem,
+  EventPackagePayload,
   RescheduleOptions,
   StaffAvailability,
   EventPackage,
@@ -17,6 +20,8 @@ import type {
   InventoryDashboard,
   InventoryPayload,
   InventoryItem,
+  IaEventoResponse,
+  PeruLocations,
   WorkerContact,
   WorkerPayload,
 } from './types'
@@ -87,10 +92,14 @@ export const api = {
     request<ClientLookupResponse>(
       `/integration/document-lookup?documentType=${encodeURIComponent(documentType)}&documentNumber=${encodeURIComponent(documentNumber)}`,
     ),
+  peruLocations: () => request<PeruLocations>('/locations/peru'),
   settings: () => request<AppSettings>('/settings'),
   updateSettings: (payload: {
     peruApiToken?: string
     clearPeruApiToken?: boolean
+    geminiApiKey?: string
+    clearGeminiApiKey?: boolean
+    geminiModel?: string
     rescheduleMinNoticeDays?: number
     rescheduleMaxMonths?: number
     cancellationRetentionNoticeDays?: number
@@ -100,16 +109,27 @@ export const api = {
   inventory: () => request<InventoryDashboard>('/inventory'),
   createInventoryItem: (payload: InventoryPayload) =>
     request<InventoryItem>('/inventory', { method: 'POST', body: JSON.stringify(payload) }),
+  updateInventoryItem: (id: string, payload: InventoryPayload) =>
+    request<InventoryItem>(`/inventory/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteInventoryItem: (id: string) => request<void>(`/inventory/${id}`, { method: 'DELETE' }),
   workers: () => request<WorkerContact[]>('/workers'),
   createWorker: (payload: WorkerPayload) =>
     request<WorkerContact>('/workers', { method: 'POST', body: JSON.stringify(payload) }),
+  updateWorker: (id: string, payload: WorkerPayload) =>
+    request<WorkerContact>(`/workers/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteWorker: (id: string) => request<void>(`/workers/${id}`, { method: 'DELETE' }),
-  packages: () => request<EventPackage[]>('/packages'),
+  packages: (includeInactive = false) => request<EventPackage[]>(`/packages${includeInactive ? '?includeInactive=true' : ''}`),
+  createPackage: (payload: EventPackagePayload) =>
+    request<EventPackage>('/packages', { method: 'POST', body: JSON.stringify(payload) }),
+  updatePackage: (id: string, payload: EventPackagePayload) =>
+    request<EventPackage>(`/packages/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   events: () => request<EventItem[]>('/events'),
   contractPreview: (eventId: string) => request<ContractPreview>(`/events/${eventId}/contract-preview`),
   eventStaffAssignments: (eventId: string) =>
     request<EventStaffAssignment[]>(`/events/${eventId}/staff-assignments`),
+  eventPayments: (eventId: string) => request<ClientPayment[]>(`/events/${eventId}/payments`),
+  createEventPayment: (eventId: string, payload: ClientPaymentPayload) =>
+    request<ClientPayment>(`/events/${eventId}/payments`, { method: 'POST', body: JSON.stringify(payload) }),
   eventStaffAvailability: (eventId: string, roleKey: string) =>
     request<StaffAvailability[]>(
       `/events/${eventId}/staff-assignments/availability?roleKey=${encodeURIComponent(roleKey)}`,
@@ -145,6 +165,11 @@ export const api = {
       cancellationType: 'CLIENT_REQUEST' | 'FORCE_MAJEURE' | 'NO_SHOW' | 'RESCHEDULE_REQUEST_REJECTED'
       requestedAt?: string
       cancellationNotes?: string
+      cancellationPaymentStatus?: 'ADELANTO_RETENIDO' | 'DEVOLUCION_PARCIAL' | 'DEVOLUCION_TOTAL' | 'SIN_ADELANTO'
+      refundedAmount?: number
+      cancellationReason?: string
+      cancellationDate?: string
+      cancellationObservation?: string
     },
   ) => request<EventItem>(`/events/${id}/cancel`, { method: 'POST', body: JSON.stringify(payload) }),
   rescheduleEvent: (id: string, payload: { eventDate: string; startTime: string; endTime: string }) =>
@@ -158,4 +183,6 @@ export const api = {
     request<AiResponse>('/ai/marketing/copy', { method: 'POST', body: JSON.stringify(payload) }),
   aiBalance: (payload: Record<string, unknown>) =>
     request<AiResponse>('/ai/balance/explain', { method: 'POST', body: JSON.stringify(payload) }),
+  iaInterpretar: (mensaje: string) =>
+    request<IaEventoResponse>('/ia/interpretar', { method: 'POST', body: JSON.stringify({ mensaje }) }),
 }

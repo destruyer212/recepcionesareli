@@ -9,7 +9,7 @@ public final class Enums {
     }
 
     public enum EventStatus {
-        INQUIRY, SEPARATED, CONTRACTED, PREPARING, COMPLETED, CLOSED, CANCELLED, RESCHEDULED
+        INQUIRY, SEPARATED, CONTRACTED, CANCELLED
     }
 
     public enum DocumentType {
@@ -18,6 +18,14 @@ public final class Enums {
 
     public enum CancellationType {
         CLIENT_REQUEST, FORCE_MAJEURE, NO_SHOW, RESCHEDULE_REQUEST_REJECTED
+    }
+
+    public enum CancellationPaymentStatus {
+        ADELANTO_RETENIDO, DEVOLUCION_PARCIAL, DEVOLUCION_TOTAL, SIN_ADELANTO
+    }
+
+    public enum PaymentType {
+        EVENT_PAYMENT, APDAYC, GUARANTEE
     }
 
     public enum ContractStatus {

@@ -1,6 +1,9 @@
 package com.areli.api.web;
 
+import com.areli.api.service.ClientPaymentService;
 import com.areli.api.service.EventService;
+import com.areli.api.web.dto.ApiDtos.ClientPaymentRequest;
+import com.areli.api.web.dto.ApiDtos.ClientPaymentResponse;
 import com.areli.api.web.dto.ApiDtos.ContractPreviewResponse;
 import com.areli.api.web.dto.ApiDtos.EventResponse;
 import com.areli.api.web.dto.ApiDtos.RescheduleOptionsResponse;
@@ -25,14 +28,18 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/events")
 public class EventController {
     private final EventService eventService;
+    private final ClientPaymentService clientPaymentService;
 
-    public EventController(EventService eventService) {
+    public EventController(EventService eventService, ClientPaymentService clientPaymentService) {
         this.eventService = eventService;
+        this.clientPaymentService = clientPaymentService;
     }
 
     @GetMapping
     public List<EventResponse> listUpcoming() {
-        return eventService.listUpcoming().stream().map(EventResponse::from).toList();
+        return eventService.listUpcoming().stream()
+                .map(event -> EventResponse.from(event, eventService.paidAmount(event.getId())))
+                .toList();
     }
 
     @GetMapping("/{id}/contract-preview")
@@ -43,22 +50,37 @@ public class EventController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public EventResponse create(@RequestBody @Valid CreateEventRequest request) {
-        return EventResponse.from(eventService.create(request));
+        var event = eventService.create(request);
+        return EventResponse.from(event, eventService.paidAmount(event.getId()));
     }
 
     @PutMapping("/{id}")
     public EventResponse update(@PathVariable UUID id, @RequestBody @Valid UpdateEventRequest request) {
-        return EventResponse.from(eventService.update(id, request));
+        var event = eventService.update(id, request);
+        return EventResponse.from(event, eventService.paidAmount(event.getId()));
     }
 
     @PostMapping("/{id}/cancel")
     public EventResponse cancel(@PathVariable UUID id, @RequestBody(required = false) CancelEventRequest request) {
-        return EventResponse.from(eventService.cancel(id, request));
+        var event = eventService.cancel(id, request);
+        return EventResponse.from(event, eventService.paidAmount(event.getId()));
     }
 
     @PostMapping("/{id}/reschedule")
     public EventResponse reschedule(@PathVariable UUID id, @RequestBody @Valid RescheduleEventRequest request) {
-        return EventResponse.from(eventService.reschedule(id, request));
+        var event = eventService.reschedule(id, request);
+        return EventResponse.from(event, eventService.paidAmount(event.getId()));
+    }
+
+    @GetMapping("/{id}/payments")
+    public List<ClientPaymentResponse> payments(@PathVariable UUID id) {
+        return clientPaymentService.list(id).stream().map(ClientPaymentResponse::from).toList();
+    }
+
+    @PostMapping("/{id}/payments")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ClientPaymentResponse createPayment(@PathVariable UUID id, @RequestBody @Valid ClientPaymentRequest request) {
+        return ClientPaymentResponse.from(clientPaymentService.create(id, request));
     }
 
     @GetMapping("/{id}/reschedule-options")

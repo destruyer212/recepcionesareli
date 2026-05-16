@@ -27,6 +27,11 @@ public class Client extends BaseEntity {
     @Column(columnDefinition = "text")
     private String address;
 
+    private String province;
+    private String district;
+    private String provinceUbigeo;
+    private String districtUbigeo;
+
     @Column(columnDefinition = "text")
     private String notes;
 
@@ -84,6 +89,38 @@ public class Client extends BaseEntity {
 
     public void setAddress(String address) {
         this.address = address;
+    }
+
+    public String getProvince() {
+        return province;
+    }
+
+    public void setProvince(String province) {
+        this.province = province;
+    }
+
+    public String getDistrict() {
+        return district;
+    }
+
+    public void setDistrict(String district) {
+        this.district = district;
+    }
+
+    public String getProvinceUbigeo() {
+        return provinceUbigeo;
+    }
+
+    public void setProvinceUbigeo(String provinceUbigeo) {
+        this.provinceUbigeo = provinceUbigeo;
+    }
+
+    public String getDistrictUbigeo() {
+        return districtUbigeo;
+    }
+
+    public void setDistrictUbigeo(String districtUbigeo) {
+        this.districtUbigeo = districtUbigeo;
     }
 
     public String getNotes() {

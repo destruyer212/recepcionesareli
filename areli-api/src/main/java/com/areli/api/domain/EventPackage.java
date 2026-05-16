@@ -38,31 +38,63 @@ public class EventPackage extends BaseEntity {
         return name;
     }
 
+    public void setName(String name) {
+        this.name = name;
+    }
+
     public String getEventType() {
         return eventType;
+    }
+
+    public void setEventType(String eventType) {
+        this.eventType = eventType;
     }
 
     public BigDecimal getBasePrice() {
         return basePrice;
     }
 
+    public void setBasePrice(BigDecimal basePrice) {
+        this.basePrice = basePrice;
+    }
+
     public Integer getIncludedCapacity() {
         return includedCapacity;
+    }
+
+    public void setIncludedCapacity(Integer includedCapacity) {
+        this.includedCapacity = includedCapacity;
     }
 
     public BigDecimal getGuaranteeAmount() {
         return guaranteeAmount;
     }
 
+    public void setGuaranteeAmount(BigDecimal guaranteeAmount) {
+        this.guaranteeAmount = guaranteeAmount;
+    }
+
     public String getIncludedServices() {
         return includedServices;
+    }
+
+    public void setIncludedServices(String includedServices) {
+        this.includedServices = includedServices;
     }
 
     public String getTerms() {
         return terms;
     }
 
+    public void setTerms(String terms) {
+        this.terms = terms;
+    }
+
     public boolean isActive() {
         return active;
+    }
+
+    public void setActive(boolean active) {
+        this.active = active;
     }
 }

@@ -26,11 +26,24 @@ public class WorkerService {
     @Transactional
     public StaffMember create(WorkerRequest request) {
         StaffMember worker = request.toEntity();
+        applyRequest(worker, request);
+        return staffMembers.save(worker);
+    }
+
+    @Transactional
+    public StaffMember update(UUID id, WorkerRequest request) {
+        StaffMember worker = staffMembers.findById(Objects.requireNonNull(id, "id"))
+                .orElseThrow(() -> new EntityNotFoundException("Contacto de personal no encontrado"));
+        applyRequest(worker, request);
+        worker.setActive(true);
+        return staffMembers.save(worker);
+    }
+
+    private static void applyRequest(StaffMember worker, WorkerRequest request) {
         worker.setRole(request.category().trim().toUpperCase());
         worker.setFullName(request.name().trim());
         worker.setPhone(request.phone() == null || request.phone().isBlank() ? null : request.phone().trim());
         worker.setNotes(request.notes() == null ? null : request.notes().trim());
-        return staffMembers.save(worker);
     }
 
     @Transactional

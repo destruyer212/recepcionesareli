@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, PointerEvent as ReactPointerEvent } from 'react'
+import { createPortal } from 'react-dom'
 import FullCalendar from '@fullcalendar/react'
 import DatePicker, { registerLocale } from 'react-datepicker'
 import dayGridPlugin from '@fullcalendar/daygrid'
@@ -38,8 +39,11 @@ import { downloadEventContractPdf } from './pdf'
 import { WorkersView } from './components/Workers/WorkersView'
 import type {
   Client,
+  ClientPayment,
+  ClientPaymentPayload,
   ClientPayload,
   ContractPreview,
+  CancellationPaymentStatus,
   DashboardSummary,
   DocumentType,
   ApdaycPayer,
@@ -48,17 +52,21 @@ import type {
   EventStaffRoleKey,
   EventItem,
   EventPackage,
+  EventPackagePayload,
   EventPayload,
   EventStatus,
   Floor,
   FloorStatus,
+  IaEventoResponse,
   InventoryDashboard,
   InventoryItem,
   InventoryPayload,
   InventoryStatus,
+  PeruLocations,
   RescheduleOptions,
   StaffAvailability,
   AppSettings,
+  PaymentType,
 } from './types'
 import 'react-datepicker/dist/react-datepicker.css'
 import './App.css'
@@ -118,6 +126,9 @@ function FancySelect({
   placeholder = 'Seleccionar',
   required,
   disabled,
+  searchable,
+  searchPlaceholder = 'Buscar...',
+  mobileSearchTitle,
 }: {
   value: string
   onChange: (value: string) => void
@@ -125,9 +136,17 @@ function FancySelect({
   placeholder?: string
   required?: boolean
   disabled?: boolean
+  searchable?: boolean
+  searchPlaceholder?: string
+  mobileSearchTitle?: string
 }) {
   const [isOpen, setIsOpen] = useState(false)
+  const [isMobileSheetOpen, setIsMobileSheetOpen] = useState(false)
+  const [isMobileViewport, setIsMobileViewport] = useState(false)
+  const [searchTerm, setSearchTerm] = useState('')
   const wrapperRef = useRef<HTMLDivElement | null>(null)
+  const mobileSearchInputRef = useRef<HTMLInputElement | null>(null)
+  const mobileSheet = useMobileModalBehavior(isMobileSheetOpen)
 
   useEffect(() => {
     function handleOutsideClick(event: MouseEvent) {
@@ -147,7 +166,51 @@ function FancySelect({
     }
   }, [])
 
+  useEffect(() => {
+    if (!isOpen) setSearchTerm('')
+  }, [isOpen])
+
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 720px)')
+    const update = () => setIsMobileViewport(query.matches)
+    update()
+    if (query.addEventListener) {
+      query.addEventListener('change', update)
+      return () => query.removeEventListener('change', update)
+    }
+    query.addListener(update)
+    return () => query.removeListener(update)
+  }, [])
+
+  useEffect(() => {
+    if (!isMobileSheetOpen) return
+    window.setTimeout(() => mobileSearchInputRef.current?.focus(), 80)
+  }, [isMobileSheetOpen])
+
+  useEffect(() => {
+    if (!isMobileViewport) setIsMobileSheetOpen(false)
+  }, [isMobileViewport])
+
   const selected = options.find((option) => option.value === value)
+  const shouldShowSearch = Boolean(searchable || options.length > 16)
+  const shouldUseMobileSheet = Boolean(searchable && isMobileViewport)
+  const visibleOptions = useMemo(() => {
+    const term = normalizeSearchText(searchTerm.trim())
+    if (!term) return options
+    return options.filter((option) => normalizeSearchText(option.label).includes(term))
+  }, [options, searchTerm])
+  const sheetTitle = mobileSearchTitle || placeholder
+
+  function closeMobileSheet() {
+    setIsMobileSheetOpen(false)
+    setSearchTerm('')
+  }
+
+  function selectOption(nextValue: string) {
+    onChange(nextValue)
+    setIsOpen(false)
+    closeMobileSheet()
+  }
 
   return (
     <div className={`fancy-select ${isOpen ? 'open' : ''} ${disabled ? 'disabled' : ''}`} ref={wrapperRef}>
@@ -162,10 +225,16 @@ function FancySelect({
         value={value}
       />
       <button
-        aria-expanded={isOpen}
+        aria-expanded={isOpen || isMobileSheetOpen}
         className="fancy-select-trigger"
         disabled={disabled}
-        onClick={() => setIsOpen((current) => !current)}
+        onClick={() => {
+          if (shouldUseMobileSheet) {
+            setIsMobileSheetOpen(true)
+            return
+          }
+          setIsOpen((current) => !current)
+        }}
         type="button"
       >
         <span>{selected?.label || placeholder}</span>
@@ -181,32 +250,103 @@ function FancySelect({
       )}
       {isOpen && (
         <div className="fancy-select-menu" role="listbox">
+          {shouldShowSearch && (
+            <div className="fancy-select-search-wrap">
+              <input
+                autoFocus
+                className="fancy-select-search"
+                onChange={(event) => setSearchTerm(event.target.value)}
+                onClick={(event) => event.stopPropagation()}
+                onMouseDown={(event) => event.stopPropagation()}
+                onPointerDown={(event) => event.stopPropagation()}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') event.preventDefault()
+                }}
+                placeholder={searchPlaceholder}
+                type="search"
+                value={searchTerm}
+              />
+            </div>
+          )}
           <button
             className={`fancy-select-option ${value === '' ? 'active' : ''}`}
-            onClick={() => {
-              onChange('')
-              setIsOpen(false)
-            }}
+            onClick={() => selectOption('')}
             type="button"
           >
             {placeholder}
           </button>
-          {options.map((option) => (
+          {visibleOptions.map((option) => (
             <button
               className={`fancy-select-option ${value === option.value ? 'active' : ''}`}
               disabled={option.disabled}
               key={option.value}
-              onClick={() => {
-                onChange(option.value)
-                setIsOpen(false)
-              }}
+              onClick={() => selectOption(option.value)}
               type="button"
             >
               {option.label}
             </button>
           ))}
+          {visibleOptions.length === 0 && <div className="fancy-select-empty">Sin resultados.</div>}
         </div>
       )}
+      {isMobileSheetOpen &&
+        createPortal(
+          <div
+            aria-label={sheetTitle}
+            aria-modal="true"
+            className="mobile-search-select-layer"
+            onClick={closeMobileSheet}
+            role="dialog"
+          >
+            <section
+              className="mobile-search-select-sheet"
+              ref={mobileSheet.modalRef}
+              onClick={(event) => event.stopPropagation()}
+              onPointerDownCapture={mobileSheet.handlePointerDown}
+            >
+              <header className="mobile-search-select-head">
+                <h3>{sheetTitle}</h3>
+                <button className="btn icon" onClick={closeMobileSheet} type="button">
+                  <X size={16} />
+                  Cerrar
+                </button>
+              </header>
+              <div className="mobile-search-select-search">
+                <input
+                  ref={mobileSearchInputRef}
+                  onChange={(event) => setSearchTerm(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') event.preventDefault()
+                  }}
+                  placeholder={searchPlaceholder}
+                  type="search"
+                  value={searchTerm}
+                />
+              </div>
+              <div className="mobile-search-select-list" ref={mobileSheet.modalBodyRef} role="listbox">
+                {value && (
+                  <button className="mobile-search-select-option muted" onClick={() => selectOption('')} type="button">
+                    {placeholder}
+                  </button>
+                )}
+                {visibleOptions.map((option) => (
+                  <button
+                    className={`mobile-search-select-option ${value === option.value ? 'active' : ''}`}
+                    disabled={option.disabled}
+                    key={option.value}
+                    onClick={() => selectOption(option.value)}
+                    type="button"
+                  >
+                    <span>{option.label}</span>
+                    {value === option.value && <strong>Seleccionado</strong>}
+                  </button>
+                ))}
+                {visibleOptions.length === 0 && <div className="mobile-search-select-empty">Sin resultados.</div>}
+              </div>
+            </section>
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }
@@ -360,14 +500,17 @@ function useMobileModalBehavior(isOpen: boolean) {
     const previousBodyWidth = document.body.style.width
     const previousHtmlOverflow = document.documentElement.style.overflow
     const previousHtmlOverscroll = document.documentElement.style.overscrollBehaviorY
+    const useFixedBodyLock = window.matchMedia('(max-width: 720px)').matches
     document.documentElement.classList.add('modal-scroll-locked')
     document.body.style.overflow = 'hidden'
     document.body.style.overscrollBehaviorY = 'none'
-    document.body.style.position = 'fixed'
-    document.body.style.top = `-${scrollY}px`
-    document.body.style.left = '0'
-    document.body.style.right = '0'
-    document.body.style.width = '100%'
+    if (useFixedBodyLock) {
+      document.body.style.position = 'fixed'
+      document.body.style.top = `-${scrollY}px`
+      document.body.style.left = '0'
+      document.body.style.right = '0'
+      document.body.style.width = '100%'
+    }
     document.documentElement.style.overflow = 'hidden'
     document.documentElement.style.overscrollBehaviorY = 'none'
     modalEl.addEventListener('focusin', bringFocusedFieldIntoView)
@@ -407,7 +550,7 @@ function useMobileModalBehavior(isOpen: boolean) {
       modalEl.style.removeProperty('--kb-offset')
       modalEl.style.removeProperty('--vvh')
       modalEl.style.removeProperty('--vv-offset-top')
-      window.scrollTo(0, scrollY)
+      if (useFixedBodyLock) window.scrollTo(0, scrollY)
     }
   }, [isOpen])
 
@@ -531,6 +674,10 @@ const emptyClient: ClientPayload = {
   whatsapp: '',
   email: '',
   address: '',
+  province: '',
+  district: '',
+  provinceUbigeo: '',
+  districtUbigeo: '',
   notes: '',
 }
 
@@ -543,7 +690,7 @@ const emptyEvent: EventPayload = {
   eventDate: new Date().toISOString().slice(0, 10),
   startTime: '18:00',
   endTime: '23:00',
-  status: 'SEPARATED',
+  status: 'INQUIRY',
   totalAmount: 0,
   apdaycAmount: 0,
   apdaycPayer: 'CLIENT',
@@ -812,12 +959,41 @@ const eventStatusLabels: Record<EventStatus, string> = {
   INQUIRY: 'Consulta',
   SEPARATED: 'Separado',
   CONTRACTED: 'Contratado',
-  PREPARING: 'En preparación',
-  COMPLETED: 'Realizado',
-  CLOSED: 'Cerrado',
   CANCELLED: 'Cancelado',
-  RESCHEDULED: 'Reprogramado',
 }
+
+const eventStatusOptions: Array<{ value: EventStatus; label: string }> = [
+  { value: 'INQUIRY', label: 'Consulta' },
+  { value: 'SEPARATED', label: 'Separado' },
+  { value: 'CONTRACTED', label: 'Contratado' },
+  { value: 'CANCELLED', label: 'Cancelado' },
+]
+
+const cancellationPaymentStatusLabels: Record<CancellationPaymentStatus, string> = {
+  ADELANTO_RETENIDO: 'Adelanto retenido',
+  DEVOLUCION_PARCIAL: 'Devolución parcial',
+  DEVOLUCION_TOTAL: 'Devolución total',
+  SIN_ADELANTO: 'Sin adelanto',
+}
+
+const paymentTypeLabels: Record<PaymentType, string> = {
+  EVENT_PAYMENT: 'Pago del evento',
+  APDAYC: 'APDAYC',
+  GUARANTEE: 'Garantía',
+}
+
+const paymentTypeOptions: Array<{ value: PaymentType; label: string }> = [
+  { value: 'EVENT_PAYMENT', label: 'Pago del evento' },
+  { value: 'APDAYC', label: 'APDAYC (no suma como ingreso)' },
+  { value: 'GUARANTEE', label: 'Garantía (devolvible, no ingreso)' },
+]
+
+const cancellationPaymentOptions: Array<{ value: CancellationPaymentStatus; label: string }> = [
+  { value: 'SIN_ADELANTO', label: 'Cancelado sin adelanto' },
+  { value: 'ADELANTO_RETENIDO', label: 'Adelanto retenido' },
+  { value: 'DEVOLUCION_PARCIAL', label: 'Devolución parcial' },
+  { value: 'DEVOLUCION_TOTAL', label: 'Devolución total' },
+]
 
 const floorStatusLabels: Record<FloorStatus, string> = {
   AVAILABLE: 'Disponible',
@@ -840,6 +1016,12 @@ const apdaycStatusLabels: Record<ApdaycStatus, string> = {
 }
 
 type EventCancellationType = 'CLIENT_REQUEST' | 'FORCE_MAJEURE' | 'NO_SHOW' | 'RESCHEDULE_REQUEST_REJECTED'
+type EventCancellationFilter =
+  | 'ALL'
+  | 'CANCELLED_NO_ADVANCE'
+  | 'CANCELLED_RETAINED'
+  | 'CANCELLED_PARTIAL_REFUND'
+  | 'CANCELLED_TOTAL_REFUND'
 
 const eventCancellationTypes: EventCancellationType[] = [
   'CLIENT_REQUEST',
@@ -854,6 +1036,14 @@ const eventCancellationTypeLabels: Record<EventCancellationType, string> = {
   NO_SHOW: 'Inasistencia (no show)',
   RESCHEDULE_REQUEST_REJECTED: 'Solicitud de reprogramación rechazada',
 }
+
+const eventCancellationFilterOptions: Array<{ value: EventCancellationFilter; label: string }> = [
+  { value: 'ALL', label: 'Todos los eventos' },
+  { value: 'CANCELLED_NO_ADVANCE', label: 'Cancelados sin adelanto' },
+  { value: 'CANCELLED_RETAINED', label: 'Cancelados con adelanto retenido' },
+  { value: 'CANCELLED_PARTIAL_REFUND', label: 'Cancelados con devolución parcial' },
+  { value: 'CANCELLED_TOTAL_REFUND', label: 'Cancelados con devolución total' },
+]
 
 type EventStaffRoleConfig = {
   id: EventStaffRoleKey
@@ -972,15 +1162,17 @@ function App() {
   const [packages, setPackages] = useState<EventPackage[]>([])
   const [events, setEvents] = useState<EventItem[]>([])
   const [inventory, setInventory] = useState<InventoryDashboard | null>(null)
+  const [peruLocations, setPeruLocations] = useState<PeruLocations>({ provinces: [], districts: [] })
   const [clientForm, setClientForm] = useState<ClientPayload>(emptyClient)
   const [eventForm, setEventForm] = useState<EventPayload>(emptyEvent)
   const [inventoryForm, setInventoryForm] = useState<InventoryPayload>(emptyInventoryItem)
   const [editingEvent, setEditingEvent] = useState<EventItem | null>(null)
   const [editEventForm, setEditEventForm] = useState<EventPayload | null>(null)
   const [editBusy, setEditBusy] = useState(false)
+  const activePackages = useMemo(() => packages.filter((item) => item.active !== false), [packages])
   const selectedPackage = useMemo(
-    () => packages.find((item) => item.id === eventForm.packageId),
-    [eventForm.packageId, packages],
+    () => activePackages.find((item) => item.id === eventForm.packageId),
+    [activePackages, eventForm.packageId],
   )
 
   async function loadData() {
@@ -1003,18 +1195,28 @@ function App() {
       }))
 
       // Carga en segundo plano de módulos no críticos para abrir dashboard.
-      void Promise.all([api.clients(), api.packages(), api.inventory()])
-        .then(([clientList, packageList, inventoryData]) => {
+      void Promise.all([
+        api.clients(),
+        api.packages(true),
+        api.inventory(),
+        api.peruLocations().catch(() => ({ provinces: [], districts: [] }) as PeruLocations),
+      ])
+        .then(([clientList, packageList, inventoryData, locationsData]) => {
           setClients(clientList)
           setPackages(packageList)
           setInventory(inventoryData)
+          setPeruLocations(locationsData)
+          const nextActivePackages = packageList.filter((item) => item.active !== false)
           const firstInventoryCategory = inventoryData.categories[0]
           const firstInventorySubcategory = firstInventoryCategory?.subcategorias[0]
           setEventForm((current) => ({
             ...current,
             clientId: current.clientId || clientList[0]?.id || '',
-            packageId: current.packageId || packageList[0]?.id || '',
-            totalAmount: current.totalAmount || Number(packageList[0]?.basePrice ?? 0),
+            packageId:
+              current.packageId && nextActivePackages.some((item) => item.id === current.packageId)
+                ? current.packageId
+                : nextActivePackages[0]?.id || '',
+            totalAmount: current.totalAmount || Number(nextActivePackages[0]?.basePrice ?? 0),
           }))
           setInventoryForm((current) => ({
             ...current,
@@ -1215,7 +1417,8 @@ function App() {
   if (!draft.eventDate || !draft.startTime || !draft.endTime) {
     throw new Error('Falta completar fecha y horario.')
   }
-  if (!draft.contractCapacityOverride || Number(draft.contractCapacityOverride) <= 0) {
+  const contractCapacity = resolvedAiCapacity(draft, packages)
+  if (!contractCapacity || contractCapacity <= 0) {
     throw new Error('Falta capacidad contractual mayor a 0.')
   }
   if (!draft.totalAmount || Number(draft.totalAmount) <= 0) {
@@ -1234,12 +1437,12 @@ function App() {
       eventDate: draft.eventDate,
       startTime: draft.startTime,
       endTime: draft.endTime,
-      status: draft.status ?? 'SEPARATED',
+      status: draft.status ?? 'INQUIRY',
       totalAmount: Number(draft.totalAmount),
       apdaycAmount: Number(draft.apdaycAmount ?? 0),
       apdaycPayer: draft.apdaycPayer ?? 'CLIENT',
       apdaycStatus: draft.apdaycStatus ?? 'NOT_APPLIES',
-      contractCapacityOverride: Number(draft.contractCapacityOverride),
+      contractCapacityOverride: contractCapacity,
       apdaycNotes: draft.apdaycNotes || undefined,
       notes: draft.notes || undefined,
     })
@@ -1510,7 +1713,8 @@ function App() {
           <EventsView
             clients={clients}
             floors={floors}
-            packages={packages}
+            packages={activePackages}
+            peruLocations={peruLocations}
             selectedPackage={selectedPackage}
             eventForm={eventForm}
             updateEvent={updateEvent}
@@ -1556,7 +1760,7 @@ function App() {
                         <FancySelect
                           value={editEventForm.status}
                           onChange={(nextValue) => updateEditEvent('status', nextValue as EventStatus)}
-                          options={Object.entries(eventStatusLabels).map(([value, label]) => ({ value, label }))}
+                          options={eventStatusOptions}
                         />
                       </label>
                       <label>
@@ -1644,6 +1848,8 @@ function App() {
           <ClientsView
             mode="create"
             clients={clients}
+            events={events}
+            peruLocations={peruLocations}
             clientForm={clientForm}
             updateClient={updateClient}
             submitClient={submitClient}
@@ -1654,6 +1860,8 @@ function App() {
           <ClientsView
             mode="registered"
             clients={clients}
+            events={events}
+            peruLocations={peruLocations}
             clientForm={clientForm}
             updateClient={updateClient}
             submitClient={submitClient}
@@ -1664,7 +1872,7 @@ function App() {
             }}
           />
         )}
-        {!loading && view === 'packages' && <PackagesView packages={packages} />}
+        {!loading && view === 'packages' && <PackagesView packages={packages} onPackagesChanged={loadData} />}
         {!loading && view === 'floors' && <FloorsView floors={floors} summary={summary} />}
         {!loading && view === 'inventory' && (
           <InventoryView
@@ -1675,6 +1883,11 @@ function App() {
             updateInventory={updateInventory}
             submitInventory={submitInventory}
             removeInventoryItem={removeInventoryItem}
+            updateInventoryItem={async (id, payload) => {
+              await api.updateInventoryItem(id, payload)
+              setMessage('Articulo actualizado correctamente.')
+              await loadData()
+            }}
           />
         )}
         {!loading && view === 'inventoryCreate' && (
@@ -1686,13 +1899,18 @@ function App() {
             updateInventory={updateInventory}
             submitInventory={submitInventory}
             removeInventoryItem={removeInventoryItem}
+            updateInventoryItem={async (id, payload) => {
+              await api.updateInventoryItem(id, payload)
+              setMessage('Articulo actualizado correctamente.')
+              await loadData()
+            }}
           />
         )}
         {!loading && view === 'ai' && (
           <AiView
             clients={clients}
             floors={floors}
-            packages={packages}
+            packages={activePackages}
             onCreateEvent={createEventFromAi}
           />
         )}
@@ -1730,6 +1948,8 @@ function titleFor(view: View) {
 function SettingsView() {
   const [data, setData] = useState<AppSettings | null>(null)
   const [tokenInput, setTokenInput] = useState('')
+  const [geminiApiKeyInput, setGeminiApiKeyInput] = useState('')
+  const [geminiModelInput, setGeminiModelInput] = useState('gemini-2.5-flash')
   const [rescheduleMinNoticeDaysInput, setRescheduleMinNoticeDaysInput] = useState('15')
   const [rescheduleMaxMonthsInput, setRescheduleMaxMonthsInput] = useState('2')
   const [cancellationRetentionNoticeDaysInput, setCancellationRetentionNoticeDaysInput] = useState('15')
@@ -1742,6 +1962,7 @@ function SettingsView() {
     try {
       const s = await api.settings()
       setData(s)
+      setGeminiModelInput(s.geminiModel || 'gemini-2.5-flash')
       setRescheduleMinNoticeDaysInput(String(s.rescheduleMinNoticeDays ?? 15))
       setRescheduleMaxMonthsInput(String(s.rescheduleMaxMonths ?? 2))
       setCancellationRetentionNoticeDaysInput(String(s.cancellationRetentionNoticeDays ?? 15))
@@ -1790,6 +2011,47 @@ function SettingsView() {
     }
   }
 
+  async function saveGeminiSettings() {
+    if (!geminiApiKeyInput.trim() && !geminiModelInput.trim()) {
+      setNotice('Pega una API key de Gemini o indica un modelo antes de guardar.')
+      return
+    }
+    setBusy(true)
+    setNotice('')
+    try {
+      const s = await api.updateSettings({
+        geminiApiKey: geminiApiKeyInput.trim() || undefined,
+        geminiModel: geminiModelInput.trim() || undefined,
+      })
+      setData(s)
+      setGeminiApiKeyInput('')
+      setGeminiModelInput(s.geminiModel || 'gemini-2.5-flash')
+      setNotice('Configuración de Gemini guardada. Tiene prioridad sobre variables de entorno del servidor.')
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'No se pudo guardar Gemini.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function clearStoredGeminiKey() {
+    if (!window.confirm('¿Quitar la API key Gemini guardada en base de datos y usar solo GEMINI_API_KEY del servidor (si existe)?')) {
+      return
+    }
+    setBusy(true)
+    setNotice('')
+    try {
+      const s = await api.updateSettings({ clearGeminiApiKey: true })
+      setData(s)
+      setGeminiApiKeyInput('')
+      setNotice('API key Gemini de base de datos eliminada.')
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'No se pudo actualizar Gemini.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function saveRules() {
     const rescheduleMinNoticeDays = Number(rescheduleMinNoticeDaysInput)
     const rescheduleMaxMonths = Number(rescheduleMaxMonthsInput)
@@ -1823,6 +2085,13 @@ function SettingsView() {
     data?.peruApiTokenSource === 'BASE_DE_DATOS'
       ? 'Base de datos'
       : data?.peruApiTokenSource === 'ENTORNO'
+        ? 'Variable de entorno'
+        : 'Sin configurar'
+
+  const geminiSourceLabel =
+    data?.geminiApiKeySource === 'BASE_DE_DATOS'
+      ? 'Base de datos'
+      : data?.geminiApiKeySource === 'ENTORNO'
         ? 'Variable de entorno'
         : 'Sin configurar'
 
@@ -1869,6 +2138,49 @@ function SettingsView() {
           <button className="btn primary" disabled={busy} onClick={() => void saveToken()} type="button">
             <Save size={16} />
             {busy ? 'Guardando...' : 'Guardar token'}
+          </button>
+        </div>
+        <div className="settings-divider" />
+        <h3>Gemini IA</h3>
+        <p className="settings-intro">
+          Esta integración alimenta el apartado IA para interpretar mensajes naturales y preparar borradores antes de guardar.
+        </p>
+        <div className="settings-status">
+          <span>Estado Gemini</span>
+          <strong>{data?.geminiApiKeyReady ? 'Listo para interpretar' : 'Falta API key'}</strong>
+          <span>Origen activo</span>
+          <strong>{geminiSourceLabel}</strong>
+          <span>Modelo</span>
+          <strong>{data?.geminiModel || 'gemini-2.5-flash'}</strong>
+        </div>
+        <p className="settings-hint">{data?.geminiApiKeyHint}</p>
+        <div className="form-grid">
+          <label className="full">
+            API key Gemini
+            <input
+              autoComplete="off"
+              onChange={(e) => setGeminiApiKeyInput(e.target.value)}
+              placeholder="Pega aquí tu GEMINI_API_KEY"
+              type="password"
+              value={geminiApiKeyInput}
+            />
+          </label>
+          <label className="full">
+            Modelo Gemini
+            <input
+              onChange={(e) => setGeminiModelInput(e.target.value)}
+              placeholder="gemini-2.5-flash"
+              value={geminiModelInput}
+            />
+          </label>
+        </div>
+        <div className="form-actions">
+          <button className="btn danger" disabled={busy} onClick={() => void clearStoredGeminiKey()} type="button">
+            Quitar key Gemini de base de datos
+          </button>
+          <button className="btn primary" disabled={busy} onClick={() => void saveGeminiSettings()} type="button">
+            <Save size={16} />
+            {busy ? 'Guardando...' : 'Guardar Gemini'}
           </button>
         </div>
       </div>
@@ -2631,6 +2943,7 @@ function EventsView({
   clients,
   floors,
   packages,
+  peruLocations,
   selectedPackage,
   eventForm,
   updateEvent,
@@ -2641,6 +2954,7 @@ function EventsView({
   clients: Client[]
   floors: Floor[]
   packages: EventPackage[]
+  peruLocations: PeruLocations
   selectedPackage?: EventPackage
   eventForm: EventPayload
   updateEvent: <K extends keyof EventPayload>(key: K, value: EventPayload[K]) => void
@@ -2658,6 +2972,7 @@ function EventsView({
   const [quickLookupMessage, setQuickLookupMessage] = useState('')
   const [quickClientError, setQuickClientError] = useState('')
   const quickLookupKeyRef = useRef('')
+  const quickLookupAutofillRef = useRef<{ fullName?: string; address?: string }>({})
   const clientSearchInputRef = useRef<HTMLInputElement | null>(null)
   const suppressQuickClientOpenUntilRef = useRef(0)
   /** Tras elegir cliente: evita tap-through / ghost click en el FancySelect de Ambiente (móvil). */
@@ -2670,9 +2985,28 @@ function EventsView({
     whatsapp: '',
     email: '',
     address: '',
+    province: '',
+    district: '',
+    provinceUbigeo: '',
+    districtUbigeo: '',
     notes: '',
   })
   const quickClientModal = useMobileModalBehavior(isQuickClientOpen)
+  const quickProvinceOptions = useMemo(
+    () =>
+      peruLocations.provinces.map((province) => ({
+        value: province.ubigeo,
+        label: `${province.name} (${province.departmentName})`,
+      })),
+    [peruLocations.provinces],
+  )
+  const quickDistrictOptions = useMemo(
+    () =>
+      peruLocations.districts
+        .filter((district) => district.provinceUbigeo === quickClientForm.provinceUbigeo)
+        .map((district) => ({ value: district.ubigeo, label: district.name })),
+    [peruLocations.districts, quickClientForm.provinceUbigeo],
+  )
   const filteredClients = useMemo(() => {
     const term = clientSearch.trim().toLowerCase()
     if (!term) return clients
@@ -2742,8 +3076,15 @@ function EventsView({
         whatsapp: '',
         email: '',
         address: '',
+        province: '',
+        district: '',
+        provinceUbigeo: '',
+        districtUbigeo: '',
         notes: '',
       })
+      quickLookupKeyRef.current = ''
+      quickLookupAutofillRef.current = {}
+      setQuickLookupMessage('')
     } catch (err) {
       setQuickClientError(err instanceof Error ? err.message : 'No se pudo crear el cliente.')
     } finally {
@@ -2755,6 +3096,8 @@ function EventsView({
     const expectedLength = documentType === 'DNI' ? 8 : 11
     const digitsOnly = documentNumber.replace(/\D/g, '')
     if (digitsOnly.length !== expectedLength) {
+      quickLookupKeyRef.current = ''
+      setQuickLookupBusy(false)
       setQuickLookupMessage('')
       return
     }
@@ -2764,17 +3107,63 @@ function EventsView({
     setQuickLookupBusy(true)
     try {
       const data = await api.lookupClientDocument(documentType, digitsOnly)
-      setQuickClientForm((current) => ({
-        ...current,
-        fullName: current.fullName || data.fullName || '',
-        address: current.address || data.address || '',
-      }))
+      setQuickClientForm((current) => {
+        const currentDocumentType = (current.documentType ?? 'DNI') as 'DNI' | 'RUC'
+        const currentDigits = (current.documentNumber ?? '').replace(/\D/g, '')
+        if (`${currentDocumentType}:${currentDigits}` !== lookupKey) return current
+
+        const previousAutofill = quickLookupAutofillRef.current
+        const shouldReplaceName =
+          !current.fullName.trim() ||
+          Boolean(previousAutofill.fullName && current.fullName.trim() === previousAutofill.fullName.trim())
+        const shouldReplaceAddress =
+          !current.address?.trim() ||
+          Boolean(previousAutofill.address && current.address.trim() === previousAutofill.address.trim())
+        const nextFullName = shouldReplaceName ? data.fullName || current.fullName : current.fullName
+        const nextAddress = shouldReplaceAddress ? data.address || current.address || '' : current.address
+
+        quickLookupAutofillRef.current = {
+          fullName: data.fullName || previousAutofill.fullName,
+          address: data.address || previousAutofill.address,
+        }
+
+        return {
+          ...current,
+          fullName: nextFullName,
+          address: nextAddress,
+        }
+      })
+      if (quickLookupKeyRef.current !== lookupKey) return
       setQuickLookupMessage(data.fullName ? 'Datos cargados automáticamente desde Perú API.' : MANUAL_LOOKUP_FALLBACK_MESSAGE)
     } catch {
-      setQuickLookupMessage(MANUAL_LOOKUP_FALLBACK_MESSAGE)
+      if (quickLookupKeyRef.current === lookupKey) {
+        setQuickLookupMessage(MANUAL_LOOKUP_FALLBACK_MESSAGE)
+      }
     } finally {
-      setQuickLookupBusy(false)
+      if (quickLookupKeyRef.current === lookupKey) {
+        setQuickLookupBusy(false)
+      }
     }
+  }
+
+  function updateQuickClientProvince(provinceUbigeo: string) {
+    const province = peruLocations.provinces.find((item) => item.ubigeo === provinceUbigeo)
+    setQuickClientForm((current) => ({
+      ...current,
+      province: province?.name ?? '',
+      provinceUbigeo: province?.ubigeo ?? '',
+      district: '',
+      districtUbigeo: '',
+    }))
+  }
+
+  function updateQuickClientDistrict(districtUbigeo: string) {
+    const district = peruLocations.districts.find((item) => item.ubigeo === districtUbigeo)
+    setQuickClientForm((current) => ({
+      ...current,
+      district: district?.name ?? '',
+      districtUbigeo: district?.ubigeo ?? '',
+    }))
   }
 
   return (
@@ -2941,7 +3330,7 @@ function EventsView({
               <FancySelect
                 value={eventForm.status}
                 onChange={(nextValue) => updateEvent('status', nextValue as EventStatus)}
-                options={Object.entries(eventStatusLabels).map(([value, label]) => ({ value, label }))}
+                options={eventStatusOptions}
               />
             </label>
             <label>
@@ -3030,16 +3419,17 @@ function EventsView({
           </div>
         </form>
       </div>
-      {isQuickClientOpen && (
-        <div
-          className="quick-modal-layer"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Crear cliente rápido"
-          onClick={() => setIsQuickClientOpen(false)}
-        >
+      {isQuickClientOpen &&
+        createPortal(
           <div
-            className="quick-modal-card modal-2026 quick-modal-card-mobile"
+            className="quick-modal-layer"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Crear cliente rápido"
+            onClick={() => setIsQuickClientOpen(false)}
+          >
+          <div
+            className="quick-modal-card modal-2026 quick-modal-card-mobile quick-client-create-modal"
             ref={quickClientModal.modalRef}
             onPointerDownCapture={quickClientModal.handlePointerDown}
             onClick={(event) => event.stopPropagation()}
@@ -3070,6 +3460,7 @@ function EventsView({
                       value={quickClientForm.documentType ?? 'DNI'}
                       onChange={(nextValue) => {
                         quickLookupKeyRef.current = ''
+                        quickLookupAutofillRef.current = {}
                         setQuickLookupMessage('')
                         setQuickClientForm((current) => ({
                           ...current,
@@ -3125,6 +3516,39 @@ function EventsView({
                       onChange={(e) => setQuickClientForm((current) => ({ ...current, email: e.target.value }))}
                     />
                   </label>
+                  <label className="full">
+                    Dirección
+                    <input
+                      value={quickClientForm.address}
+                      onChange={(e) => setQuickClientForm((current) => ({ ...current, address: e.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    Provincia
+                    <FancySelect
+                      disabled={peruLocations.provinces.length === 0}
+                      onChange={updateQuickClientProvince}
+                      options={quickProvinceOptions}
+                      placeholder={peruLocations.provinces.length ? 'Seleccionar provincia' : 'Cargando provincias...'}
+                      searchable
+                      searchPlaceholder="Buscar provincia..."
+                      mobileSearchTitle="Seleccionar provincia"
+                      value={quickClientForm.provinceUbigeo ?? ''}
+                    />
+                  </label>
+                  <label>
+                    Distrito
+                    <FancySelect
+                      disabled={!quickClientForm.provinceUbigeo}
+                      onChange={updateQuickClientDistrict}
+                      options={quickDistrictOptions}
+                      placeholder={quickClientForm.provinceUbigeo ? 'Seleccionar distrito' : 'Elige provincia primero'}
+                      searchable
+                      searchPlaceholder="Buscar distrito..."
+                      mobileSearchTitle="Seleccionar distrito"
+                      value={quickClientForm.districtUbigeo ?? ''}
+                    />
+                  </label>
                 </div>
               </div>
               <div className="form-actions modal-2026-actions">
@@ -3138,10 +3562,27 @@ function EventsView({
               </div>
             </form>
           </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </section>
   )
+}
+
+function matchesCancellationFilter(event: EventItem, filter: EventCancellationFilter) {
+  if (filter === 'ALL') return true
+  if (event.status !== 'CANCELLED') return false
+  if (filter === 'CANCELLED_NO_ADVANCE') return event.cancellationPaymentStatus === 'SIN_ADELANTO'
+  if (filter === 'CANCELLED_RETAINED') return event.cancellationPaymentStatus === 'ADELANTO_RETENIDO'
+  if (filter === 'CANCELLED_PARTIAL_REFUND') return event.cancellationPaymentStatus === 'DEVOLUCION_PARCIAL'
+  if (filter === 'CANCELLED_TOTAL_REFUND') return event.cancellationPaymentStatus === 'DEVOLUCION_TOTAL'
+  return true
+}
+
+function cancellationFinancialLine(event: EventItem) {
+  if (event.status !== 'CANCELLED') return ''
+  const status = event.cancellationPaymentStatus ? cancellationPaymentStatusLabels[event.cancellationPaymentStatus] : 'Sin detalle'
+  return `Cancelacion: ${status} - Adelanto ${money.format(event.cancellationAdvanceAmount ?? event.paidAmount ?? 0)} - Retenido ${money.format(event.cancellationRetainedAmount ?? event.retainedAdvanceAmount ?? 0)} - Devuelto ${money.format(event.cancellationRefundedAmount ?? 0)}`
 }
 
 function EventTable({
@@ -3164,11 +3605,31 @@ function EventTable({
   const [cancelTarget, setCancelTarget] = useState<EventItem | null>(null)
   const [cancelCancellationType, setCancelCancellationType] = useState<EventCancellationType>('CLIENT_REQUEST')
   const [cancelNotes, setCancelNotes] = useState('')
+  const [cancelPaymentStatus, setCancelPaymentStatus] = useState<CancellationPaymentStatus>('SIN_ADELANTO')
+  const [cancelRefundedAmount, setCancelRefundedAmount] = useState(0)
+  const [cancelReason, setCancelReason] = useState('')
+  const [cancelDate, setCancelDate] = useState(new Date().toISOString().slice(0, 10))
+  const [cancelObservation, setCancelObservation] = useState('')
+  const [cancellationFilter, setCancellationFilter] = useState<EventCancellationFilter>('ALL')
+  const [paymentTarget, setPaymentTarget] = useState<EventItem | null>(null)
+  const [paymentRows, setPaymentRows] = useState<ClientPayment[]>([])
+  const [paymentBusy, setPaymentBusy] = useState(false)
+  const [paymentForm, setPaymentForm] = useState<ClientPaymentPayload>({
+    paymentDate: new Date().toISOString().slice(0, 10),
+    concept: 'Adelanto',
+    amount: 0,
+    method: 'Efectivo',
+    paymentType: 'EVENT_PAYMENT',
+    internalReceiptNumber: '',
+    notes: '',
+  })
   const [staffAssignmentTarget, setStaffAssignmentTarget] = useState<EventItem | null>(null)
   const cancelModal = useMobileModalBehavior(Boolean(cancelTarget))
+  const paymentModal = useMobileModalBehavior(Boolean(paymentTarget))
   const todayKey = dateKey(new Date())
   const visibleEvents = useMemo(() => {
-    const sorted = [...events]
+    const filtered = events.filter((event) => matchesCancellationFilter(event, cancellationFilter))
+    const sorted = [...filtered]
     if (sortMode === 'upcoming') {
       return sorted
         .filter((event) => event.status !== 'CANCELLED')
@@ -3180,7 +3641,7 @@ function EventTable({
       if (aCreated !== bCreated) return bCreated - aCreated
       return `${b.eventDate}${b.startTime}`.localeCompare(`${a.eventDate}${a.startTime}`)
     })
-  }, [events, sortMode, todayKey])
+  }, [events, sortMode, todayKey, cancellationFilter])
 
   async function downloadContract(event: EventItem) {
     setDownloadingId(event.id)
@@ -3194,9 +3655,77 @@ function EventTable({
     }
   }
 
+  async function openPayments(event: EventItem) {
+    setPaymentTarget(event)
+    setPaymentForm({
+      paymentDate: new Date().toISOString().slice(0, 10),
+      concept: (event.paidAmount ?? 0) > 0 ? 'Pago a cuenta' : 'Adelanto',
+      amount: 0,
+      method: 'Efectivo',
+      paymentType: 'EVENT_PAYMENT',
+      internalReceiptNumber: '',
+      notes: '',
+    })
+    setPaymentBusy(true)
+    try {
+      setPaymentRows(await api.eventPayments(event.id))
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'No se pudieron cargar los pagos del evento.')
+    } finally {
+      setPaymentBusy(false)
+    }
+  }
+
+  function closePayments() {
+    if (paymentBusy) return
+    setPaymentTarget(null)
+    setPaymentRows([])
+  }
+
+  function updatePayment<K extends keyof ClientPaymentPayload>(key: K, value: ClientPaymentPayload[K]) {
+    setPaymentForm((current) => ({ ...current, [key]: value }))
+  }
+
+  async function submitPayment(event: FormEvent) {
+    event.preventDefault()
+    if (!paymentTarget) return
+    if (!paymentForm.amount || Number(paymentForm.amount) <= 0) {
+      alert('Ingresa un monto mayor a 0.')
+      return
+    }
+    setPaymentBusy(true)
+    try {
+      await api.createEventPayment(paymentTarget.id, {
+        ...paymentForm,
+        amount: Number(paymentForm.amount),
+        internalReceiptNumber: paymentForm.internalReceiptNumber || undefined,
+        notes: paymentForm.notes || undefined,
+      })
+      const [nextRows] = await Promise.all([api.eventPayments(paymentTarget.id), onEventUpdated()])
+      setPaymentRows(nextRows)
+      setPaymentForm((current) => ({
+        ...current,
+        concept: 'Pago a cuenta',
+        amount: 0,
+        internalReceiptNumber: '',
+        notes: '',
+      }))
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'No se pudo registrar el pago.')
+    } finally {
+      setPaymentBusy(false)
+    }
+  }
+
   function openCancelDialog(event: EventItem) {
+    const advance = Number(event.paidAmount ?? 0)
     setCancelTarget(event)
     setCancelCancellationType('CLIENT_REQUEST')
+    setCancelPaymentStatus(advance > 0 ? 'ADELANTO_RETENIDO' : 'SIN_ADELANTO')
+    setCancelRefundedAmount(0)
+    setCancelReason('')
+    setCancelDate(new Date().toISOString().slice(0, 10))
+    setCancelObservation('')
     setCancelNotes('')
   }
 
@@ -3207,10 +3736,31 @@ function EventTable({
 
   async function confirmCancelEvent() {
     if (!cancelTarget) return
+    const advanceAmount = Number(cancelTarget.paidAmount ?? 0)
+    if (advanceAmount <= 0 && cancelPaymentStatus !== 'SIN_ADELANTO') {
+      alert('Este evento no tiene adelanto registrado. Usa "Cancelado sin adelanto".')
+      return
+    }
+    if (advanceAmount > 0 && cancelPaymentStatus === 'SIN_ADELANTO') {
+      alert('Este evento tiene adelanto registrado. Selecciona retencion o devolucion.')
+      return
+    }
+    if (cancelPaymentStatus === 'DEVOLUCION_PARCIAL') {
+      const refunded = Number(cancelRefundedAmount)
+      if (refunded <= 0 || refunded >= advanceAmount) {
+        alert('La devolucion parcial debe ser mayor a 0 y menor al adelanto recibido.')
+        return
+      }
+    }
     setProcessingId(cancelTarget.id)
     try {
       const cancelled = await api.cancelEventWithContract(cancelTarget.id, {
         cancellationType: cancelCancellationType,
+        cancellationPaymentStatus: cancelPaymentStatus,
+        refundedAmount: cancelPaymentStatus === 'DEVOLUCION_PARCIAL' ? Number(cancelRefundedAmount) : undefined,
+        cancellationReason: cancelReason.trim(),
+        cancellationDate: cancelDate,
+        cancellationObservation: cancelObservation.trim(),
         cancellationNotes: cancelNotes.trim(),
       })
       setCancelTarget(null)
@@ -3283,6 +3833,28 @@ function EventTable({
       setProcessingId(null)
     }
   }
+
+  const paymentEventPaid = paymentRows
+    .filter((row) => row.countsTowardsEventTotal)
+    .reduce((sum, row) => sum + Number(row.amount ?? 0), 0)
+  const paymentEventBalance = paymentTarget ? Math.max(0, Number(paymentTarget.totalAmount ?? 0) - paymentEventPaid) : 0
+  const cancelAdvanceAmount = Number(cancelTarget?.paidAmount ?? 0)
+  const cancelRefundedPreview =
+    cancelPaymentStatus === 'DEVOLUCION_TOTAL'
+      ? cancelAdvanceAmount
+      : cancelPaymentStatus === 'DEVOLUCION_PARCIAL'
+        ? Number(cancelRefundedAmount || 0)
+        : 0
+  const cancelRetainedPreview =
+    cancelPaymentStatus === 'ADELANTO_RETENIDO'
+      ? cancelAdvanceAmount
+      : cancelPaymentStatus === 'DEVOLUCION_PARCIAL'
+        ? Math.max(0, cancelAdvanceAmount - cancelRefundedPreview)
+        : 0
+  const cancelPaymentOptions = cancellationPaymentOptions.map((option) => ({
+    ...option,
+    disabled: cancelAdvanceAmount > 0 ? option.value === 'SIN_ADELANTO' : option.value !== 'SIN_ADELANTO',
+  }))
 
   if (events.length === 0) {
     return <p className="empty">No hay eventos registrados todavía.</p>
@@ -3372,6 +3944,133 @@ function EventTable({
           </button>
         </div>
       </section>
+    )}
+    {paymentTarget && (
+      <div
+        aria-labelledby="payment-event-title"
+        aria-modal="true"
+        className="quick-modal-layer"
+        role="dialog"
+        onClick={() => closePayments()}
+      >
+        <div
+          className="quick-modal-card modal-2026 quick-modal-card-mobile event-payment-modal"
+          ref={paymentModal.modalRef}
+          onPointerDownCapture={paymentModal.handlePointerDown}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="quick-modal-head modal-2026-head">
+            <div>
+              <h3 id="payment-event-title">Pagos del evento</h3>
+              <p>{paymentTarget.title}</p>
+            </div>
+            <button className="btn icon modal-close-btn" disabled={paymentBusy} onClick={() => closePayments()} type="button">
+              <X size={15} />
+              Cerrar
+            </button>
+          </div>
+          <div className="modal-2026-body" ref={paymentModal.modalBodyRef}>
+            <div className="payment-summary-grid">
+              <article>
+                <span>Total evento</span>
+                <strong>{money.format(paymentTarget.totalAmount)}</strong>
+              </article>
+              <article>
+                <span>Pagado evento</span>
+                <strong>{money.format(paymentEventPaid)}</strong>
+              </article>
+              <article>
+                <span>Saldo</span>
+                <strong>{money.format(paymentEventBalance)}</strong>
+              </article>
+            </div>
+            <p className="payment-accounting-note">
+              APDAYC y garantía se registran para control, pero no suman como ingreso del evento ni completan el saldo.
+            </p>
+            <form className="payment-form" onSubmit={submitPayment}>
+              <div className="form-grid">
+                <label>
+                  Fecha
+                  <input
+                    type="date"
+                    value={paymentForm.paymentDate}
+                    onChange={(event) => updatePayment('paymentDate', event.target.value)}
+                    required
+                  />
+                </label>
+                <label>
+                  Tipo
+                  <FancySelect
+                    value={paymentForm.paymentType ?? 'EVENT_PAYMENT'}
+                    onChange={(value) => updatePayment('paymentType', value as PaymentType)}
+                    options={paymentTypeOptions}
+                  />
+                </label>
+                <label>
+                  Concepto
+                  <input value={paymentForm.concept} onChange={(event) => updatePayment('concept', event.target.value)} required />
+                </label>
+                <label>
+                  Monto
+                  <input
+                    min="0.01"
+                    step="0.01"
+                    type="number"
+                    value={paymentForm.amount || ''}
+                    onChange={(event) => updatePayment('amount', Number(event.target.value))}
+                    required
+                  />
+                </label>
+                <label>
+                  Medio de pago
+                  <input value={paymentForm.method} onChange={(event) => updatePayment('method', event.target.value)} required />
+                </label>
+                <label>
+                  Recibo interno
+                  <input
+                    value={paymentForm.internalReceiptNumber ?? ''}
+                    onChange={(event) => updatePayment('internalReceiptNumber', event.target.value)}
+                  />
+                </label>
+                <label className="full">
+                  Notas
+                  <textarea value={paymentForm.notes ?? ''} onChange={(event) => updatePayment('notes', event.target.value)} rows={2} />
+                </label>
+              </div>
+              <div className="form-actions">
+                <button className="btn primary" disabled={paymentBusy} type="submit">
+                  <Save size={16} />
+                  {paymentBusy ? 'Guardando...' : 'Registrar pago'}
+                </button>
+              </div>
+            </form>
+            <div className="payment-history">
+              <strong>Historial de pagos</strong>
+              {paymentRows.length === 0 ? (
+                <p className="empty compact">Todavía no hay pagos registrados.</p>
+              ) : (
+                paymentRows.map((row) => (
+                  <article key={row.id}>
+                    <div>
+                      <strong>{row.concept}</strong>
+                      <span>{row.paymentDate} - {paymentTypeLabels[row.paymentType]}</span>
+                    </div>
+                    <div>
+                      <strong>{money.format(row.amount)}</strong>
+                      <span>{row.countsTowardsEventTotal ? 'Suma al evento' : 'No es ingreso del evento'}</span>
+                    </div>
+                  </article>
+                ))
+              )}
+            </div>
+          </div>
+          <div className="form-actions modal-2026-actions">
+            <button className="btn ghost" disabled={paymentBusy} onClick={() => closePayments()} type="button">
+              Listo
+            </button>
+          </div>
+        </div>
+      </div>
     )}
     {cancelTarget && (
       <div
@@ -3484,7 +4183,13 @@ function EventTable({
       <table className="events-registry-table">
         <colgroup>
           <col className="ercol-date" />
-          <col span={7} />
+          <col className="ercol-event" />
+          <col className="ercol-client" />
+          <col className="ercol-floor" />
+          <col className="ercol-status" />
+          <col className="ercol-amount" />
+          <col className="ercol-apdayc" />
+          <col className="ercol-actions" />
         </colgroup>
         <thead>
           <tr>
@@ -3569,7 +4274,7 @@ function EventTable({
                   type="button"
                 >
                   <Download size={16} />
-                  {downloadingId === event.id ? 'Preparando PDF...' : 'Descargar contrato PDF'}
+                  {downloadingId === event.id ? 'Preparando...' : 'Descargar PDF'}
                 </button>
                 </div>
               </td>
@@ -3687,6 +4392,10 @@ function EventStaffAssignmentModal({
     [assignments],
   )
   const nextMozoSlot = Math.max(0, ...mozoAssignments.map((assignment) => Number(assignment.slotNumber ?? 0))) + 1
+  const totalAvailableSlots = eventStaffRoles.reduce(
+    (total, role) => total + availabilityFor(role.id).filter((item) => item.available).length,
+    0,
+  )
 
   async function loadStaffData(shouldApply: () => boolean = () => true) {
     setLoading(true)
@@ -3774,24 +4483,40 @@ function EventStaffAssignmentModal({
     return availability[roleKey] ?? []
   }
 
+  function assignmentsFor(roleKey: EventStaffRoleKey) {
+    return assignments.filter((assignment) => assignment.roleKey === roleKey)
+  }
+
+  function availableCountFor(roleKey: EventStaffRoleKey) {
+    return availabilityFor(roleKey).filter((item) => item.available).length
+  }
+
+  function assignedCountLabel(count: number) {
+    return `${count} asignado${count === 1 ? '' : 's'}`
+  }
+
   function renderAvailabilitySelect(role: EventStaffRoleConfig) {
     const options = availabilityFor(role.id)
     const hasAvailable = options.some((item) => item.available)
+    const selectOptions = options.map((item) => ({
+      value: item.staffMemberId,
+      label: staffAvailabilityLabel(item),
+      disabled: !item.available,
+    }))
     return (
       <label className="staff-select-label">
-        Trabajador disponible
-        <select
+        <span>Trabajador disponible</span>
+        <FancySelect
           disabled={loading || Boolean(busyKey) || !hasAvailable}
-          onChange={(event) => selectStaff(role.id, event.target.value)}
+          mobileSearchTitle={`Seleccionar ${role.label}`}
+          onChange={(value) => selectStaff(role.id, value)}
+          options={selectOptions}
+          placeholder={hasAvailable ? 'Seleccionar trabajador' : 'No hay disponibles'}
+          searchable
+          searchPlaceholder="Buscar por nombre o teléfono..."
           value={selectedStaff[role.id] ?? ''}
-        >
-          <option value="">{hasAvailable ? 'Seleccionar trabajador' : 'No hay disponibles'}</option>
-          {options.map((item) => (
-            <option disabled={!item.available} key={item.staffMemberId} value={item.staffMemberId}>
-              {staffAvailabilityLabel(item)}
-            </option>
-          ))}
-        </select>
+        />
+        <small>{hasAvailable ? `${availableCountFor(role.id)} disponibles para este horario` : 'Sin disponibles para este horario'}</small>
       </label>
     )
   }
@@ -3805,7 +4530,7 @@ function EventStaffAssignmentModal({
             {assignment.roleKey === 'MOZOS'
               ? mozoSlotLabel(assignment.slotNumber)
               : eventStaffRoleLabel(assignment.roleKey, assignment.slotNumber)}
-            {assignment.staffPhone ? ` - ${assignment.staffPhone}` : ' - Sin telefono'}
+            {assignment.staffPhone ? ` - ${assignment.staffPhone}` : ' - Sin teléfono'}
           </span>
         </div>
         <button
@@ -3822,7 +4547,9 @@ function EventStaffAssignmentModal({
   }
 
   function renderRoleCard(role: EventStaffRoleConfig) {
-    const assigned = assignments.find((assignment) => assignment.roleKey === role.id)
+    const roleAssignments = assignmentsFor(role.id)
+    const assigned = roleAssignments[0]
+    const availableCount = availableCountFor(role.id)
     return (
       <article className="event-staff-role-card" key={role.id}>
         <header>
@@ -3830,9 +4557,16 @@ function EventStaffAssignmentModal({
             <h4>{role.label}</h4>
             <p>{role.hint}</p>
           </div>
-          <span>{assigned ? '1' : '0'}</span>
+          <span className="staff-count-badge">
+            <strong>{availableCount}</strong>
+            <small>disp.</small>
+          </span>
         </header>
-        {assigned ? renderAssigned(assigned) : <p className="empty compact">Sin contacto asignado.</p>}
+        <div className="event-staff-card-stats">
+          <span>{assignedCountLabel(roleAssignments.length)}</span>
+          <span>{availableCount} disponible{availableCount === 1 ? '' : 's'}</span>
+        </div>
+        {assigned ? roleAssignments.map(renderAssigned) : <p className="empty compact">Sin contacto asignado.</p>}
         <div className="event-staff-assign-line">
           {renderAvailabilitySelect(role)}
           <button
@@ -3878,8 +4612,12 @@ function EventStaffAssignmentModal({
         <div className="modal-2026-body staff-assignment-body" ref={modal.modalBodyRef}>
           <div className="staff-assignment-summary">
             <article>
-              <span>Asignados</span>
+              <span>Asignados al evento</span>
               <strong>{assignments.length}</strong>
+            </article>
+            <article>
+              <span>Disponibles</span>
+              <strong>{totalAvailableSlots}</strong>
             </article>
             <article>
               <span>Ambiente</span>
@@ -3904,11 +4642,18 @@ function EventStaffAssignmentModal({
                     <h4>{mozosRole.label}</h4>
                     <p>{mozosRole.hint}</p>
                   </div>
-                  <span>{mozoAssignments.length}</span>
+                  <span className="staff-count-badge">
+                    <strong>{availableCountFor('MOZOS')}</strong>
+                    <small>disp.</small>
+                  </span>
                 </header>
+                <div className="event-staff-card-stats">
+                  <span>{assignedCountLabel(mozoAssignments.length)}</span>
+                  <span>{availableCountFor('MOZOS')} disponible{availableCountFor('MOZOS') === 1 ? '' : 's'}</span>
+                </div>
                 <div className="event-staff-mozos-list">
                   {mozoAssignments.length === 0 ? (
-                    <p className="empty compact">Aun no hay mozos asignados.</p>
+                    <p className="empty compact">Aún no hay mozos asignados.</p>
                   ) : (
                     mozoAssignments.map(renderAssigned)
                   )}
@@ -3943,6 +4688,8 @@ function EventStaffAssignmentModal({
 function ClientsView({
   mode,
   clients,
+  events,
+  peruLocations,
   clientForm,
   updateClient,
   submitClient,
@@ -3950,6 +4697,8 @@ function ClientsView({
 }: {
   mode: 'create' | 'registered'
   clients: Client[]
+  events: EventItem[]
+  peruLocations: PeruLocations
   clientForm: ClientPayload
   updateClient: <K extends keyof ClientPayload>(key: K, value: ClientPayload[K]) => void
   submitClient: (event: FormEvent) => Promise<void>
@@ -3960,7 +4709,45 @@ function ClientsView({
   const [editingBusy, setEditingBusy] = useState(false)
   const [createLookupBusy, setCreateLookupBusy] = useState(false)
   const [createLookupMessage, setCreateLookupMessage] = useState('')
+  const clientEditModal = useMobileModalBehavior(Boolean(editingClientId))
   const createLookupKeyRef = useRef('')
+  const clientMetrics = useMemo(() => {
+    const values = new Map<string, { eventCount: number; packageName?: string }>()
+    clients.forEach((client) => values.set(client.id, { eventCount: 0 }))
+    events
+      .filter((event) => event.status === 'SEPARATED' || event.status === 'CONTRACTED')
+      .forEach((event) => {
+        const current = values.get(event.clientId)
+        if (!current) return
+        current.eventCount += 1
+        if (!current.packageName && event.packageName) {
+          current.packageName = event.packageName
+        }
+      })
+    return values
+  }, [clients, events])
+  const provinceOptions = useMemo(
+    () =>
+      peruLocations.provinces.map((province) => ({
+        value: province.ubigeo,
+        label: `${province.name} (${province.departmentName})`,
+      })),
+    [peruLocations.provinces],
+  )
+  const createDistrictOptions = useMemo(
+    () =>
+      peruLocations.districts
+        .filter((district) => district.provinceUbigeo === clientForm.provinceUbigeo)
+        .map((district) => ({ value: district.ubigeo, label: district.name })),
+    [clientForm.provinceUbigeo, peruLocations.districts],
+  )
+  const editingDistrictOptions = useMemo(
+    () =>
+      peruLocations.districts
+        .filter((district) => district.provinceUbigeo === editingClientForm?.provinceUbigeo)
+        .map((district) => ({ value: district.ubigeo, label: district.name })),
+    [editingClientForm?.provinceUbigeo, peruLocations.districts],
+  )
 
   function startEditingClient(client: Client) {
     setEditingClientId(client.id)
@@ -3971,13 +4758,59 @@ function ClientsView({
       phone: client.phone ?? '',
       whatsapp: client.whatsapp ?? '',
       email: client.email ?? '',
-      address: '',
-      notes: '',
+      address: client.address ?? '',
+      province: client.province ?? '',
+      district: client.district ?? '',
+      provinceUbigeo: client.provinceUbigeo ?? '',
+      districtUbigeo: client.districtUbigeo ?? '',
+      notes: client.notes ?? '',
     })
   }
 
   function updateEditingClient<K extends keyof ClientPayload>(key: K, value: ClientPayload[K]) {
     setEditingClientForm((current) => (current ? { ...current, [key]: value } : current))
+  }
+
+  function updateCreateProvince(provinceUbigeo: string) {
+    const province = peruLocations.provinces.find((item) => item.ubigeo === provinceUbigeo)
+    updateClient('provinceUbigeo', province?.ubigeo ?? '')
+    updateClient('province', province?.name ?? '')
+    updateClient('districtUbigeo', '')
+    updateClient('district', '')
+  }
+
+  function updateCreateDistrict(districtUbigeo: string) {
+    const district = peruLocations.districts.find((item) => item.ubigeo === districtUbigeo)
+    updateClient('districtUbigeo', district?.ubigeo ?? '')
+    updateClient('district', district?.name ?? '')
+  }
+
+  function updateEditingProvince(provinceUbigeo: string) {
+    const province = peruLocations.provinces.find((item) => item.ubigeo === provinceUbigeo)
+    setEditingClientForm((current) =>
+      current
+        ? {
+            ...current,
+            provinceUbigeo: province?.ubigeo ?? '',
+            province: province?.name ?? '',
+            districtUbigeo: '',
+            district: '',
+          }
+        : current,
+    )
+  }
+
+  function updateEditingDistrict(districtUbigeo: string) {
+    const district = peruLocations.districts.find((item) => item.ubigeo === districtUbigeo)
+    setEditingClientForm((current) =>
+      current
+        ? {
+            ...current,
+            districtUbigeo: district?.ubigeo ?? '',
+            district: district?.name ?? '',
+          }
+        : current,
+    )
   }
 
   async function submitEditingClient(event: FormEvent) {
@@ -4080,6 +4913,32 @@ function ClientsView({
                 Dirección
                 <input value={clientForm.address} onChange={(e) => updateClient('address', e.target.value)} />
               </label>
+              <label>
+                Provincia
+                <FancySelect
+                  disabled={peruLocations.provinces.length === 0}
+                  onChange={updateCreateProvince}
+                  options={provinceOptions}
+                  placeholder={peruLocations.provinces.length ? 'Seleccionar provincia' : 'Cargando provincias...'}
+                  searchable
+                  searchPlaceholder="Buscar provincia..."
+                  mobileSearchTitle="Seleccionar provincia"
+                  value={clientForm.provinceUbigeo ?? ''}
+                />
+              </label>
+              <label>
+                Distrito
+                <FancySelect
+                  disabled={!clientForm.provinceUbigeo}
+                  onChange={updateCreateDistrict}
+                  options={createDistrictOptions}
+                  placeholder={clientForm.provinceUbigeo ? 'Seleccionar distrito' : 'Elige provincia primero'}
+                  searchable
+                  searchPlaceholder="Buscar distrito..."
+                  mobileSearchTitle="Seleccionar distrito"
+                  value={clientForm.districtUbigeo ?? ''}
+                />
+              </label>
               <label className="full">
                 Observaciones
                 <textarea value={clientForm.notes} onChange={(e) => updateClient('notes', e.target.value)} />
@@ -4102,14 +4961,44 @@ function ClientsView({
       <div className="panel">
         <h2>Clientes registrados</h2>
         {editingClientId && editingClientForm && (
-          <div className="event-edit-box">
-            <h3>Editando cliente</h3>
-            <p className="muted">
-              Estás editando a <strong>{editingClientForm.fullName || 'cliente sin nombre'}</strong>. Guarda o cancela para volver
-              al listado.
-            </p>
-            <form onSubmit={submitEditingClient}>
-              <div className="form-grid">
+          <div
+            className="quick-modal-layer client-edit-layer"
+            onClick={() => {
+              setEditingClientId(null)
+              setEditingClientForm(null)
+            }}
+            role="presentation"
+          >
+            <div
+              aria-labelledby="client-edit-title"
+              aria-modal="true"
+              className="modal-2026 quick-modal-card-mobile client-edit-modal"
+              onClick={(event) => event.stopPropagation()}
+              onPointerDownCapture={clientEditModal.handlePointerDown}
+              ref={clientEditModal.modalRef}
+              role="dialog"
+            >
+              <div className="modal-2026-head">
+                <div>
+                  <p className="eyebrow">Cliente</p>
+                  <h3 id="client-edit-title">Editar cliente</h3>
+                  <p className="muted">{editingClientForm.fullName || 'Cliente sin nombre'}</p>
+                </div>
+                <button
+                  className="btn ghost"
+                  onClick={() => {
+                    setEditingClientId(null)
+                    setEditingClientForm(null)
+                  }}
+                  type="button"
+                >
+                  <X size={16} />
+                  Cerrar
+                </button>
+              </div>
+              <form className="modal-2026-form" onSubmit={submitEditingClient}>
+                <div className="modal-2026-body" ref={clientEditModal.modalBodyRef}>
+                  <div className="form-grid">
                 <label className="full">
                   Nombre completo
                   <input
@@ -4160,8 +5049,43 @@ function ClientsView({
                   Correo
                   <input type="email" value={editingClientForm.email} onChange={(e) => updateEditingClient('email', e.target.value)} />
                 </label>
-              </div>
-              <div className="form-actions">
+                <label className="full">
+                  Domicilio
+                  <input value={editingClientForm.address} onChange={(e) => updateEditingClient('address', e.target.value)} />
+                </label>
+                <label>
+                  Provincia
+                  <FancySelect
+                    disabled={peruLocations.provinces.length === 0}
+                    onChange={updateEditingProvince}
+                    options={provinceOptions}
+                    placeholder={peruLocations.provinces.length ? 'Seleccionar provincia' : 'Cargando provincias...'}
+                    searchable
+                    searchPlaceholder="Buscar provincia..."
+                    mobileSearchTitle="Seleccionar provincia"
+                    value={editingClientForm.provinceUbigeo ?? ''}
+                  />
+                </label>
+                <label>
+                  Distrito
+                  <FancySelect
+                    disabled={!editingClientForm.provinceUbigeo}
+                    onChange={updateEditingDistrict}
+                    options={editingDistrictOptions}
+                    placeholder={editingClientForm.provinceUbigeo ? 'Seleccionar distrito' : 'Elige provincia primero'}
+                    searchable
+                    searchPlaceholder="Buscar distrito..."
+                    mobileSearchTitle="Seleccionar distrito"
+                    value={editingClientForm.districtUbigeo ?? ''}
+                  />
+                </label>
+                <label className="full">
+                  Observaciones
+                  <textarea value={editingClientForm.notes} onChange={(e) => updateEditingClient('notes', e.target.value)} />
+                </label>
+                  </div>
+                </div>
+              <div className="form-actions modal-2026-actions">
                 <button
                   className="btn ghost"
                   onClick={() => {
@@ -4177,13 +5101,24 @@ function ClientsView({
                   {editingBusy ? 'Guardando...' : 'Guardar cambios'}
                 </button>
               </div>
-            </form>
+              </form>
+            </div>
           </div>
         )}
+        <div className="client-color-legend" aria-label="Leyenda de colores por paquete">
+          <span className="client-color-legend-title">Leyenda de paquetes</span>
+          <span><i className="legend-dot areli" /> Paquete Areli / VIP</span>
+          <span><i className="legend-dot premium" /> Paquete Premium</span>
+          <span><i className="legend-dot basic" /> Paquete Basico</span>
+          <span><i className="legend-dot school" /> Promociones escolares</span>
+          <span><i className="legend-dot none" /> Sin eventos activos</span>
+        </div>
         <div className="item-list">
           {clients.length === 0 && <p className="empty">Registra el primer cliente para separar eventos.</p>}
-          {clients.map((client) => (
-            <article className="item-card" key={client.id}>
+          {clients.map((client) => {
+            const metrics = clientMetrics.get(client.id) ?? { eventCount: 0 }
+            return (
+            <article className={`item-card client-card ${clientPackageClass(metrics.packageName)}`} key={client.id}>
               <header>
                 <strong>{client.fullName}</strong>
                 <span>
@@ -4193,6 +5128,12 @@ function ClientsView({
               <p>
                 {client.whatsapp || client.phone || 'Sin teléfono'} {client.email ? `- ${client.email}` : ''}
               </p>
+              <p>Domicilio: {client.address || 'Sin domicilio registrado'}</p>
+              <p>Ubicación: {[client.district, client.province].filter(Boolean).join(' - ') || 'Sin provincia/distrito'}</p>
+              <div className="client-card-meta">
+                <span>Numero de eventos: {metrics.eventCount}</span>
+                {metrics.packageName && <span>{clientPackageLabel(metrics.packageName)}</span>}
+              </div>
               <div className="form-actions">
                 <button
                   className="btn icon"
@@ -4204,14 +5145,255 @@ function ClientsView({
                 </button>
               </div>
             </article>
-          ))}
+            )
+          })}
         </div>
       </div>
     </section>
   )
 }
 
-function PackagesView({ packages }: { packages: EventPackage[] }) {
+function clientPackageClass(packageName?: string) {
+  const value = normalizeSearchText(packageName ?? '')
+  if (!value) return ''
+  if (value.includes('areli')) return 'client-package-areli'
+  if (value.includes('premium')) return 'client-package-premium'
+  if (value.includes('basico')) return 'client-package-basic'
+  if (value.includes('promocion') || value.includes('escolar')) {
+    return 'client-package-school'
+  }
+  return ''
+}
+
+function clientPackageLabel(packageName?: string) {
+  const value = normalizeSearchText(packageName ?? '')
+  if (value.includes('areli')) return 'VIP Areli'
+  return packageName ?? ''
+}
+
+function normalizeSearchText(value: string) {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+}
+
+function PackagesView({
+  packages,
+  onPackagesChanged,
+}: {
+  packages: EventPackage[]
+  onPackagesChanged: () => Promise<void>
+}) {
+  const [editingPackage, setEditingPackage] = useState<EventPackage | null>(null)
+  const [packageForm, setPackageForm] = useState<EventPackagePayload>(emptyPackagePayload())
+  const [isPackageModalOpen, setIsPackageModalOpen] = useState(false)
+  const [packageBusy, setPackageBusy] = useState(false)
+  const [packageNotice, setPackageNotice] = useState('')
+  const packageModal = useMobileModalBehavior(isPackageModalOpen)
+
+  function openCreatePackage() {
+    setEditingPackage(null)
+    setPackageForm(emptyPackagePayload())
+    setPackageNotice('')
+    setIsPackageModalOpen(true)
+  }
+
+  function openEditPackage(eventPackage: EventPackage) {
+    setEditingPackage(eventPackage)
+    setPackageForm(packageToPayload(eventPackage))
+    setPackageNotice('')
+    setIsPackageModalOpen(true)
+  }
+
+  function updatePackageForm<K extends keyof EventPackagePayload>(key: K, value: EventPackagePayload[K]) {
+    setPackageForm((current) => ({ ...current, [key]: value }))
+  }
+
+  async function submitPackage(event: FormEvent) {
+    event.preventDefault()
+    setPackageBusy(true)
+    setPackageNotice('')
+    try {
+      const payload = cleanPackagePayload(packageForm)
+      if (editingPackage) {
+        await api.updatePackage(editingPackage.id, payload)
+        setPackageNotice('Paquete actualizado correctamente.')
+      } else {
+        await api.createPackage(payload)
+        setPackageNotice('Paquete comercial creado correctamente.')
+      }
+      setIsPackageModalOpen(false)
+      await onPackagesChanged()
+    } catch (error) {
+      setPackageNotice(error instanceof Error ? error.message : 'No se pudo guardar el paquete.')
+    } finally {
+      setPackageBusy(false)
+    }
+  }
+
+  async function togglePackage(eventPackage: EventPackage) {
+    setPackageBusy(true)
+    setPackageNotice('')
+    try {
+      await api.updatePackage(eventPackage.id, {
+        ...packageToPayload(eventPackage),
+        active: !eventPackage.active,
+      })
+      await onPackagesChanged()
+      setPackageNotice(eventPackage.active ? 'Paquete desactivado.' : 'Paquete activado.')
+    } catch (error) {
+      setPackageNotice(error instanceof Error ? error.message : 'No se pudo cambiar el estado del paquete.')
+    } finally {
+      setPackageBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <section className="grid packages-layout">
+        <div className="panel packages-toolbar">
+          <div>
+            <h2>Paquetes comerciales</h2>
+            <p className="settings-intro">Gestiona precios, capacidad, garantia y condiciones del contrato.</p>
+          </div>
+          <button className="btn primary" onClick={openCreatePackage} type="button">
+            <Plus size={17} />
+            Crear paquete comercial
+          </button>
+        </div>
+
+        {packageNotice && <p className="message ok">{packageNotice}</p>}
+
+        <div className="packages-card-grid">
+          {packages.map((eventPackage) => (
+            <article className={`item-card package-card ${eventPackage.active ? '' : 'inactive'}`} key={eventPackage.id}>
+              <header>
+                <strong>{eventPackage.name}</strong>
+                <span>{money.format(eventPackage.basePrice)}</span>
+              </header>
+              <p>{eventPackage.includedServices || 'Sin descripcion registrada.'}</p>
+              <p>
+                Capacidad: {eventPackage.includedCapacity ?? 'Por definir'} - Garantia:{' '}
+                {money.format(eventPackage.guaranteeAmount ?? 0)}
+              </p>
+              <p>{eventPackage.terms || 'Sin condiciones registradas.'}</p>
+              <div className="package-card-actions">
+                <span className={`status ${eventPackage.active ? 'CONTRACTED' : 'CANCELLED'}`}>
+                  {eventPackage.active ? 'Activo' : 'Inactivo'}
+                </span>
+                <button className="btn ghost" onClick={() => openEditPackage(eventPackage)} type="button">
+                  Editar
+                </button>
+                <button className="btn icon" disabled={packageBusy} onClick={() => void togglePackage(eventPackage)} type="button">
+                  {eventPackage.active ? 'Desactivar' : 'Activar'}
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      {isPackageModalOpen && (
+        <div className="quick-modal-layer package-modal-layer" onClick={() => setIsPackageModalOpen(false)} role="presentation">
+          <div
+            aria-labelledby="package-modal-title"
+            aria-modal="true"
+            className="modal-2026 quick-modal-card-mobile package-modal"
+            ref={packageModal.modalRef}
+            role="dialog"
+            onClick={(event) => event.stopPropagation()}
+            onPointerDownCapture={packageModal.handlePointerDown}
+          >
+            <div className="modal-2026-head">
+              <div>
+                <p className="eyebrow">Paquete comercial</p>
+                <h3 id="package-modal-title">{editingPackage ? 'Editar paquete' : 'Crear paquete comercial'}</h3>
+              </div>
+              <button className="btn ghost" onClick={() => setIsPackageModalOpen(false)} type="button">
+                <X size={16} />
+                Cerrar
+              </button>
+            </div>
+            <form className="modal-2026-form" onSubmit={submitPackage}>
+              <div className="modal-2026-body" ref={packageModal.modalBodyRef}>
+                <div className="form-grid">
+                  <label>
+                    Nombre del paquete
+                    <input value={packageForm.name} onChange={(event) => updatePackageForm('name', event.target.value)} required />
+                  </label>
+                  <label>
+                    Tipo sugerido
+                    <input value={packageForm.eventType ?? ''} onChange={(event) => updatePackageForm('eventType', event.target.value)} />
+                  </label>
+                  <label>
+                    Precio
+                    <input
+                      min="0"
+                      step="0.01"
+                      type="number"
+                      value={packageForm.basePrice}
+                      onChange={(event) => updatePackageForm('basePrice', Number(event.target.value))}
+                      required
+                    />
+                  </label>
+                  <label>
+                    Capacidad
+                    <input
+                      min="0"
+                      type="number"
+                      value={packageForm.includedCapacity ?? ''}
+                      onChange={(event) => updatePackageForm('includedCapacity', event.target.value ? Number(event.target.value) : undefined)}
+                      placeholder="Por definir"
+                    />
+                  </label>
+                  <label>
+                    Garantia
+                    <input
+                      min="0"
+                      step="0.01"
+                      type="number"
+                      value={packageForm.guaranteeAmount ?? 0}
+                      onChange={(event) => updatePackageForm('guaranteeAmount', Number(event.target.value))}
+                    />
+                  </label>
+                  <label>
+                    Estado
+                    <FancySelect
+                      value={packageForm.active === false ? 'inactive' : 'active'}
+                      onChange={(value) => updatePackageForm('active', value === 'active')}
+                      options={[
+                        { value: 'active', label: 'Activo' },
+                        { value: 'inactive', label: 'Inactivo' },
+                      ]}
+                    />
+                  </label>
+                  <label className="full">
+                    Descripcion del paquete
+                    <textarea
+                      value={packageForm.includedServices ?? ''}
+                      onChange={(event) => updatePackageForm('includedServices', event.target.value)}
+                    />
+                  </label>
+                  <label className="full">
+                    Condiciones comerciales
+                    <textarea value={packageForm.terms ?? ''} onChange={(event) => updatePackageForm('terms', event.target.value)} />
+                  </label>
+                </div>
+              </div>
+              <div className="form-actions modal-2026-actions">
+                <button className="btn ghost" onClick={() => setIsPackageModalOpen(false)} type="button">
+                  Cancelar
+                </button>
+                <button className="btn primary" disabled={packageBusy} type="submit">
+                  <Save size={16} />
+                  {packageBusy ? 'Guardando...' : 'Guardar paquete'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
+  )
+
   return (
     <section className="grid three">
       {packages.map((eventPackage) => (
@@ -4230,6 +5412,45 @@ function PackagesView({ packages }: { packages: EventPackage[] }) {
       ))}
     </section>
   )
+}
+
+function emptyPackagePayload(): EventPackagePayload {
+  return {
+    name: '',
+    eventType: '',
+    basePrice: 0,
+    includedCapacity: undefined,
+    guaranteeAmount: 0,
+    includedServices: '',
+    terms: '',
+    active: true,
+  }
+}
+
+function packageToPayload(eventPackage: EventPackage): EventPackagePayload {
+  return {
+    name: eventPackage.name,
+    eventType: eventPackage.eventType ?? '',
+    basePrice: Number(eventPackage.basePrice ?? 0),
+    includedCapacity: eventPackage.includedCapacity,
+    guaranteeAmount: Number(eventPackage.guaranteeAmount ?? 0),
+    includedServices: eventPackage.includedServices ?? '',
+    terms: eventPackage.terms ?? '',
+    active: eventPackage.active,
+  }
+}
+
+function cleanPackagePayload(payload: EventPackagePayload): EventPackagePayload {
+  return {
+    ...payload,
+    eventType: payload.eventType?.trim() || undefined,
+    includedServices: payload.includedServices?.trim() || undefined,
+    terms: payload.terms?.trim() || undefined,
+    includedCapacity: payload.includedCapacity && payload.includedCapacity > 0 ? payload.includedCapacity : undefined,
+    guaranteeAmount: Number(payload.guaranteeAmount ?? 0),
+    basePrice: Number(payload.basePrice ?? 0),
+    active: payload.active !== false,
+  }
 }
 
 function FloorsView({ floors, summary }: { floors: Floor[]; summary: DashboardSummary | null }) {
@@ -4269,6 +5490,7 @@ function InventoryView({
   updateInventory,
   submitInventory,
   removeInventoryItem,
+  updateInventoryItem,
 }: {
   floors: Floor[]
   inventory: InventoryDashboard | null
@@ -4277,6 +5499,7 @@ function InventoryView({
   updateInventory: <K extends keyof InventoryPayload>(key: K, value: InventoryPayload[K]) => void
   submitInventory: (event: FormEvent) => Promise<void>
   removeInventoryItem: (item: InventoryItem) => Promise<void>
+  updateInventoryItem: (id: string, payload: InventoryPayload) => Promise<void>
 }) {
   const [pisoFilter, setPisoFilter] = useState('ALL')
   const [categoryFilter, setCategoryFilter] = useState('ALL')
@@ -4285,6 +5508,12 @@ function InventoryView({
   const subcategoryOptions = selectedCategory?.subcategorias ?? []
   const formUnitValue =
     Number(inventoryForm.cantidad || 0) > 0 ? Number(inventoryForm.valorTotal || 0) / Number(inventoryForm.cantidad) : 0
+  const [editingInventoryItem, setEditingInventoryItem] = useState<InventoryItem | null>(null)
+  const [editingInventoryForm, setEditingInventoryForm] = useState<InventoryPayload | null>(null)
+  const [inventoryEditBusy, setInventoryEditBusy] = useState(false)
+  const inventoryEditModal = useMobileModalBehavior(Boolean(editingInventoryItem))
+  const editingCategory = categories.find((category) => category.id === editingInventoryForm?.categoriaId)
+  const editingSubcategoryOptions = editingCategory?.subcategorias ?? []
   const pisoOptions = useMemo(() => {
     const values = new Map<string, string>()
     ;['1er piso', '2do piso', '3er y 4to piso'].forEach((piso) => values.set(piso, piso))
@@ -4342,6 +5571,64 @@ function InventoryView({
     return Array.from(values.values())
   }, [filteredItems])
   const activePisoLabel = pisoFilter === 'ALL' ? 'Todos los pisos' : pisoFilter
+  const editingUnitValue =
+    editingInventoryForm && Number(editingInventoryForm.cantidad || 0) > 0
+      ? Number(editingInventoryForm.valorTotal || 0) / Number(editingInventoryForm.cantidad)
+      : 0
+
+  function openInventoryEdit(item: InventoryItem) {
+    setEditingInventoryItem(item)
+    setEditingInventoryForm(inventoryItemToPayload(item))
+  }
+
+  function updateEditingInventory<K extends keyof InventoryPayload>(key: K, value: InventoryPayload[K]) {
+    setEditingInventoryForm((current) => (current ? { ...current, [key]: value } : current))
+  }
+
+  function updateEditingInventoryQuantity(quantity: number) {
+    setEditingInventoryForm((current) => {
+      if (!current) return current
+      const currentUnitValue = Number(current.cantidad || 0) > 0 ? Number(current.valorTotal || 0) / Number(current.cantidad) : 0
+      return {
+        ...current,
+        cantidad: quantity,
+        valorTotal: Number((currentUnitValue * quantity).toFixed(2)),
+      }
+    })
+  }
+
+  function updateEditingInventoryUnitValue(unitValue: number) {
+    setEditingInventoryForm((current) => {
+      if (!current) return current
+      return {
+        ...current,
+        valorTotal: Number((unitValue * Number(current.cantidad || 0)).toFixed(2)),
+      }
+    })
+  }
+
+  async function submitInventoryEdit(event: FormEvent) {
+    event.preventDefault()
+    if (!editingInventoryItem || !editingInventoryForm) return
+    setInventoryEditBusy(true)
+    try {
+      await updateInventoryItem(editingInventoryItem.id, {
+        ...editingInventoryForm,
+        piso: canonicalInventoryPiso(editingInventoryForm.piso),
+        cantidad: Number(editingInventoryForm.cantidad),
+        valorTotal: Number(editingInventoryForm.valorTotal),
+        descripcion: editingInventoryForm.descripcion || undefined,
+        ubicacion: editingInventoryForm.ubicacion || undefined,
+        observacion: editingInventoryForm.observacion || undefined,
+      })
+      setEditingInventoryItem(null)
+      setEditingInventoryForm(null)
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'No se pudo actualizar el articulo.')
+    } finally {
+      setInventoryEditBusy(false)
+    }
+  }
   const activeCategoryLabel = categoryFilter === 'ALL' ? 'Todas las categorías' : categories.find((category) => category.id === categoryFilter)?.nombre ?? 'Categoría'
 
   return (
@@ -4556,18 +5843,181 @@ function InventoryView({
             </article>
           ))}
         </div>
-        <InventoryTable items={filteredItems} removeInventoryItem={removeInventoryItem} />
+        <InventoryTable items={filteredItems} onEditItem={openInventoryEdit} removeInventoryItem={removeInventoryItem} />
       </div>
+      )}
+      {editingInventoryItem && editingInventoryForm && (
+        <div
+          className="quick-modal-layer inventory-edit-layer"
+          onClick={() => {
+            setEditingInventoryItem(null)
+            setEditingInventoryForm(null)
+          }}
+          role="presentation"
+        >
+          <div
+            aria-labelledby="inventory-edit-title"
+            aria-modal="true"
+            className="modal-2026 quick-modal-card-mobile inventory-edit-modal"
+            ref={inventoryEditModal.modalRef}
+            role="dialog"
+            onClick={(event) => event.stopPropagation()}
+            onPointerDownCapture={inventoryEditModal.handlePointerDown}
+          >
+            <div className="modal-2026-head">
+              <div>
+                <p className="eyebrow">Inventario</p>
+                <h3 id="inventory-edit-title">Editar articulo</h3>
+              </div>
+              <button
+                className="btn ghost"
+                onClick={() => {
+                  setEditingInventoryItem(null)
+                  setEditingInventoryForm(null)
+                }}
+                type="button"
+              >
+                <X size={16} />
+                Cerrar
+              </button>
+            </div>
+            <form className="modal-2026-form" onSubmit={submitInventoryEdit}>
+              <div className="modal-2026-body" ref={inventoryEditModal.modalBodyRef}>
+                <div className="form-grid">
+                  <label>
+                    Piso
+                    <FancySelect
+                      value={canonicalInventoryPiso(editingInventoryForm.piso)}
+                      onChange={(nextValue) => updateEditingInventory('piso', canonicalInventoryPiso(nextValue))}
+                      options={pisoOptions}
+                    />
+                  </label>
+                  <label>
+                    Categoria
+                    <FancySelect
+                      value={editingInventoryForm.categoriaId}
+                      onChange={(nextValue) => {
+                        const nextCategory = categories.find((category) => category.id === nextValue)
+                        updateEditingInventory('categoriaId', nextValue)
+                        updateEditingInventory('subcategoriaId', nextCategory?.subcategorias[0]?.id ?? '')
+                      }}
+                      options={categories.map((category) => ({ value: category.id, label: category.nombre }))}
+                    />
+                  </label>
+                  <label>
+                    Subcategoria
+                    <FancySelect
+                      value={editingInventoryForm.subcategoriaId}
+                      onChange={(nextValue) => updateEditingInventory('subcategoriaId', nextValue)}
+                      options={editingSubcategoryOptions.map((subcategory) => ({ value: subcategory.id, label: subcategory.nombre }))}
+                    />
+                  </label>
+                  <label className="full">
+                    Articulo
+                    <input value={editingInventoryForm.nombre} onChange={(event) => updateEditingInventory('nombre', event.target.value)} required />
+                  </label>
+                  <label>
+                    Cantidad
+                    <input
+                      min="0.01"
+                      step="0.01"
+                      type="number"
+                      value={editingInventoryForm.cantidad}
+                      onChange={(event) => updateEditingInventoryQuantity(Number(event.target.value))}
+                      required
+                    />
+                  </label>
+                  <label>
+                    Unidad
+                    <input
+                      value={editingInventoryForm.unidadMedida}
+                      onChange={(event) => updateEditingInventory('unidadMedida', event.target.value)}
+                      required
+                    />
+                  </label>
+                  <label>
+                    Valor unitario
+                    <input
+                      min="0"
+                      step="0.01"
+                      type="number"
+                      value={Number(editingUnitValue.toFixed(2))}
+                      onChange={(event) => updateEditingInventoryUnitValue(Number(event.target.value))}
+                      required
+                    />
+                  </label>
+                  <label>
+                    Estado
+                    <FancySelect
+                      value={editingInventoryForm.estado}
+                      onChange={(nextValue) => updateEditingInventory('estado', nextValue as InventoryStatus)}
+                      options={Object.entries(inventoryStatusLabels).map(([value, label]) => ({ value, label }))}
+                    />
+                  </label>
+                  <label>
+                    Ubicacion
+                    <input value={editingInventoryForm.ubicacion} onChange={(event) => updateEditingInventory('ubicacion', event.target.value)} />
+                  </label>
+                  <label>
+                    Descripcion
+                    <input value={editingInventoryForm.descripcion} onChange={(event) => updateEditingInventory('descripcion', event.target.value)} />
+                  </label>
+                  <label className="full">
+                    Observaciones
+                    <textarea value={editingInventoryForm.observacion} onChange={(event) => updateEditingInventory('observacion', event.target.value)} />
+                  </label>
+                </div>
+                <div className="inventory-form-total">
+                  Total recalculado: <strong>{money.format(Number(editingInventoryForm.valorTotal || 0))}</strong>
+                </div>
+              </div>
+              <div className="form-actions modal-2026-actions">
+                <button
+                  className="btn ghost"
+                  onClick={() => {
+                    setEditingInventoryItem(null)
+                    setEditingInventoryForm(null)
+                  }}
+                  type="button"
+                >
+                  Cancelar
+                </button>
+                <button className="btn primary" disabled={inventoryEditBusy} type="submit">
+                  <Save size={16} />
+                  {inventoryEditBusy ? 'Guardando...' : 'Guardar cambios'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </section>
   )
 }
 
+function inventoryItemToPayload(item: InventoryItem): InventoryPayload {
+  return {
+    piso: canonicalInventoryPiso(item.piso),
+    categoriaId: item.categoriaId,
+    subcategoriaId: item.subcategoriaId,
+    nombre: item.nombre,
+    descripcion: item.descripcion ?? '',
+    cantidad: Number(item.cantidad ?? 1),
+    unidadMedida: item.unidadMedida,
+    valorTotal: Number(item.valorTotal ?? 0),
+    estado: item.estado,
+    ubicacion: item.ubicacion ?? '',
+    observacion: item.observacion ?? '',
+  }
+}
+
 function InventoryTable({
   items,
+  onEditItem,
   removeInventoryItem,
 }: {
   items: InventoryItem[]
+  onEditItem: (item: InventoryItem) => void
   removeInventoryItem: (item: InventoryItem) => Promise<void>
 }) {
   if (items.length === 0) {
@@ -4617,6 +6067,14 @@ function InventoryTable({
                 </td>
                 <td>{item.ubicacion || '-'}</td>
                 <td className="actions-cell">
+                  <button
+                    className="btn icon"
+                    onClick={() => onEditItem(item)}
+                    title="Editar articulo"
+                    type="button"
+                  >
+                    Editar
+                  </button>
                   <button
                     className="btn icon danger"
                     onClick={() => void removeInventoryItem(item)}
@@ -4669,6 +6127,14 @@ function InventoryTable({
             <p>{item.ubicacion || item.observacion || 'Sin ubicacion registrada'}</p>
             <div className="mobile-card-actions">
               <button
+                className="btn icon"
+                onClick={() => onEditItem(item)}
+                title="Editar articulo"
+                type="button"
+              >
+                Editar
+              </button>
+              <button
                 className="btn icon danger"
                 onClick={() => void removeInventoryItem(item)}
                 title="Retirar del inventario activo"
@@ -4694,6 +6160,7 @@ type AiEventDraft = Partial<EventPayload> & {
   floorName?: string
   packageName?: string
   apdaycConfirmed?: boolean
+  capacityFromPackage?: boolean
 }
 
 type AiChatMessage = {
@@ -4781,6 +6248,47 @@ function formatAiDraftValue(value: unknown) {
   return String(value)
 }
 
+function findAiDraftPackage(draft: AiEventDraft, packages: EventPackage[]) {
+  return (
+    packages.find((eventPackage) => eventPackage.id === draft.packageId) ??
+    packages.find((eventPackage) => normalizeAiText(eventPackage.name) === normalizeAiText(draft.packageName ?? ''))
+  )
+}
+
+function packageCapacityValue(eventPackage?: EventPackage) {
+  const capacity = Number(eventPackage?.includedCapacity ?? 0)
+  return Number.isFinite(capacity) && capacity > 0 ? capacity : 0
+}
+
+function resolvedAiCapacity(draft: AiEventDraft, packages: EventPackage[]) {
+  const packageCapacity = packageCapacityValue(findAiDraftPackage(draft, packages))
+  if (draft.capacityFromPackage && packageCapacity > 0) return packageCapacity
+  const draftCapacity = Number(draft.contractCapacityOverride ?? 0)
+  if (Number.isFinite(draftCapacity) && draftCapacity > 0) return draftCapacity
+  return packageCapacity
+}
+
+function normalizeIaAction(action?: string) {
+  return normalizeAiText(action ?? '').replace(/\s+/g, '_').toUpperCase()
+}
+
+function isAiDraftAction(action?: string) {
+  return ['CREAR_EVENTO', 'ACTUALIZAR_EVENTO'].includes(normalizeIaAction(action))
+}
+
+function isAiSmallTalkMessage(text: string) {
+  const normalized = normalizeAiText(text).replace(/[¿?¡!.,;:]+/g, '').trim()
+  if (!normalized) return true
+  const hasEventIntent =
+    /\b(evento|reserva|separ|crear|registrar|boda|matrimonio|cumple|quince|promo|promocion|cliente|dni|ruc|telefono|whatsapp|piso|ambiente|paquete|monto|total|capacidad|fecha|hora|apdayc|dj|mozo|fotografo|videografo|barman|decoracion)\b/.test(
+      normalized,
+    ) || aiHasApdaycMention(normalized)
+  if (hasEventIntent) return false
+  return /^(hola|buenas|buenos dias|buenas tardes|buenas noches|gracias|ok|okay|listo|ayuda|que puedes hacer|como funciona|quien eres)(\s|$)/.test(
+    normalized,
+  )
+}
+
 function aiDigits(value: string) {
   return value.replace(/\D/g, '')
 }
@@ -4790,6 +6298,10 @@ function parseAiDocument(text: string): { documentType: DocumentType; documentNu
   const ruc = normalized.match(/\bruc\s*:?\s*(\d{11})\b/) ?? normalized.match(/\b(10\d{9}|20\d{9})\b/)
   if (ruc) {
     return { documentType: 'RUC', documentNumber: ruc[1] }
+  }
+  const looseRuc = normalized.match(/\b(\d{11})\b/)
+  if (looseRuc && !normalized.includes('monto') && !normalized.includes('total') && !aiHasApdaycMention(normalized)) {
+    return { documentType: 'RUC', documentNumber: looseRuc[1] }
   }
   const dni = normalized.match(/\bdni\s*:?\s*(\d{8})\b/)
   if (dni) {
@@ -4817,12 +6329,15 @@ function isAiApdaycComplete(draft: AiEventDraft) {
 function formatAiApdaycDraft(draft: AiEventDraft) {
   if (!draft.apdaycConfirmed) return 'Pendiente'
   if (draft.apdaycStatus === 'NOT_APPLIES') return 'No aplica'
-  const amount = draft.apdaycAmount !== undefined ? money.format(Number(draft.apdaycAmount)) : 'Monto pendiente'
+  const amountValue = Number(draft.apdaycAmount)
+  const amount = Number.isFinite(amountValue) && amountValue > 0 ? money.format(amountValue) : 'Monto pendiente'
   const payer = draft.apdaycPayer ? apdaycPayerLabels[draft.apdaycPayer] : 'Responsable pendiente'
   return `${amount} - ${payer}`
 }
 
 function extractAiClientQuery(text: string) {
+  if (isAiSmallTalkMessage(text)) return ''
+
   const explicit = text.match(
     /\b(?:buscar cliente|cliente|para|a nombre de)\s+(.+?)(?=\s+(?:el|en|con|paquete|desde|de\s+\d|a\s+las|telefono|tel|whatsapp|dni|ruc|monto|total|capacidad)\b|[.,;]|$)/i,
   )
@@ -4841,6 +6356,65 @@ function extractAiClientQuery(text: string) {
     !/\b(matrimonio|boda|cumple|quince|promo|promocion|piso|ambiente|paquete|monto|total|capacidad|apdayc|resumen|limpiar|nuevo)\b/.test(normalized)
 
   return looksLikeOnlyAName ? compact : ''
+}
+
+function looksLikeClientOnlyAnswer(text: string) {
+  const normalized = normalizeAiText(text).replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!normalized) return false
+  if (parseAiDocument(normalized)) return true
+  if (/\b9\d{8}\b/.test(normalized)) return true
+  const words = normalized.split(' ').filter(Boolean)
+  return (
+    words.length > 0 &&
+    words.length <= 5 &&
+    /[a-z]/.test(normalized) &&
+    !/\b(evento|reserva|separ|crear|registrar|boda|matrimonio|cumple|quince|promo|promocion|piso|ambiente|paquete|monto|total|capacidad|fecha|hora|apdayc|apday|apdac|apdyc|dj|mozo|fotografo|videografo|barman|decoracion|limpiar|resumen|nuevo)\b/.test(
+      normalized,
+    )
+  )
+}
+
+function applyAiClientOnlyAnswer(message: string, currentDraft: AiEventDraft, clients: Client[]): AiDetectedResult | null {
+  if (!looksLikeClientOnlyAnswer(message)) return null
+  const document = parseAiDocument(message)
+  const phone = message.match(/\b9\d{8}\b/)?.[0]
+  const searchText = document
+    ? `${document.documentType} ${document.documentNumber}`
+    : phone
+      ? phone
+      : `cliente ${message}`
+  const matches = searchAiClientMatches(searchText, clients)
+  const selected = matches.length === 1 && shouldAutoSelectAiClient(searchText, matches[0]) ? matches[0] : null
+  const nextDraft: AiEventDraft = { ...currentDraft }
+  const detected: string[] = []
+
+  if (selected) {
+    nextDraft.clientId = selected.id
+    nextDraft.clientName = selected.name
+    nextDraft.clientPhone = selected.phone || nextDraft.clientPhone
+    nextDraft.clientDocumentType = selected.documentType || nextDraft.clientDocumentType
+    nextDraft.clientDocumentNumber = selected.documentNumber || nextDraft.clientDocumentNumber
+    nextDraft.title = nextDraft.eventType ? aiTitleFromDraft({ ...nextDraft, clientName: selected.name }) : nextDraft.title
+    detected.push('cliente registrado')
+    return { draft: nextDraft, detected, clientMatches: [] }
+  }
+
+  if (document) {
+    nextDraft.clientId = ''
+    nextDraft.clientDocumentType = document.documentType
+    nextDraft.clientDocumentNumber = document.documentNumber
+    detected.push(document.documentType)
+  } else if (phone) {
+    nextDraft.clientPhone = phone
+    detected.push('telefono de cliente')
+  } else {
+    nextDraft.clientId = ''
+    nextDraft.clientName = message.trim()
+    nextDraft.title = nextDraft.eventType ? aiTitleFromDraft(nextDraft, message.trim()) : nextDraft.title
+    detected.push('nombre de cliente')
+  }
+
+  return { draft: nextDraft, detected, clientMatches: matches }
 }
 
 function clientAiDetail(client: Client) {
@@ -4991,13 +6565,145 @@ function findAiClient(text: string, clients: Client[]) {
   return null
 }
 
+function aiIncludesAny(value: string, options: string[]) {
+  return options.some((option) => value.includes(option))
+}
+
+function aiEditDistance(a: string, b: string) {
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index)
+  for (let i = 1; i <= a.length; i += 1) {
+    let diagonal = previous[0]
+    previous[0] = i
+    for (let j = 1; j <= b.length; j += 1) {
+      const saved = previous[j]
+      previous[j] = a[i - 1] === b[j - 1]
+        ? diagonal
+        : Math.min(previous[j] + 1, previous[j - 1] + 1, diagonal + 1)
+      diagonal = saved
+    }
+  }
+  return previous[b.length]
+}
+
+function aiWordLikeAny(tokens: string[], targets: string[]) {
+  return tokens.some((token) =>
+    targets.some((target) => {
+      if (token === target || token.includes(target) || target.includes(token)) return true
+      if (token.length < 4 || target.length < 4) return false
+      const allowed = target.length >= 7 ? 3 : 2
+      return aiEditDistance(token, target) <= allowed
+    }),
+  )
+}
+
+function aiIsApdaycTokenLike(token: string) {
+  const clean = token.replace(/[^a-z]/g, '')
+  if (!clean) return false
+  if (['apdayc', 'apday', 'apdac', 'apdyc', 'apdacy', 'apdaic', 'apdeyc', 'apdai', 'apdic', 'apd'].includes(clean)) {
+    return true
+  }
+  if (clean.includes('apdayc') || clean.includes('apday') || clean.includes('apdac')) return true
+  return clean.length >= 4 && clean.length <= 9 && aiEditDistance(clean, 'apdayc') <= 2
+}
+
+function aiHasApdaycMention(text: string) {
+  const normalized = normalizeAiText(text).replace(/[^a-z0-9\s/.,]/g, ' ')
+  const compact = normalized.replace(/\s+/g, '')
+  if (['apdayc', 'apday', 'apdac', 'apdyc', 'apdacy', 'apdaic', 'apdeyc'].some((alias) => compact.includes(alias))) {
+    return true
+  }
+  return normalized.split(/\s+/).filter(Boolean).some(aiIsApdaycTokenLike)
+}
+
+function parseAiApdaycInfo(text: string): {
+  mentioned: boolean
+  amount?: number
+  payer?: ApdaycPayer
+  status?: ApdaycStatus
+  noAplica?: boolean
+} {
+  const normalized = normalizeAiText(text).replace(/[^a-z0-9\s/.,]/g, ' ').replace(/\s+/g, ' ').trim()
+  const tokens = normalized.split(/\s+/).filter(Boolean)
+  const apdaycIndexes = tokens
+    .map((token, index) => (aiIsApdaycTokenLike(token) ? index : -1))
+    .filter((index) => index >= 0)
+  const mentioned = aiHasApdaycMention(normalized)
+  if (!mentioned) return { mentioned: false }
+
+  const noAplica = /\b(?:sin|no\s+aplica|exonerado|exonerada|no\s+corresponde)\b/.test(normalized)
+  const payer: ApdaycPayer | undefined = normalized.includes('areli')
+    ? 'ARELI'
+    : normalized.includes('compart')
+      ? 'SHARED'
+      : normalized.includes('cliente') || normalized.includes('contratante') || normalized.includes('promocion') || normalized.includes('institucion')
+        ? 'CLIENT'
+        : undefined
+  const status: ApdaycStatus | undefined = normalized.includes('pagado') || normalized.includes('cancelado')
+    ? 'PAID'
+    : normalized.includes('incluido')
+      ? 'INCLUDED'
+      : normalized.includes('pendiente')
+        ? 'PENDING'
+        : undefined
+  const isMoneyToken = (token: string) => token.replace(/^s\/?/, '').match(/^\d+(?:[.,]\d+)?$/)
+  let amountToken = ''
+  for (const index of apdaycIndexes) {
+    const nearby = tokens.slice(Math.max(0, index - 4), index + 5)
+    amountToken = nearby.find((token) => Boolean(isMoneyToken(token))) ?? ''
+    if (amountToken) break
+  }
+  if (!amountToken) {
+    amountToken = tokens.find((token) => Boolean(isMoneyToken(token)) && !/^(10|20)\d{9}$/.test(token) && !/^\d{8}$/.test(token)) ?? ''
+  }
+  const amount = amountToken ? normalizeAiMoney(amountToken.replace(/^s\/?/, '')) : undefined
+  return { mentioned, amount, payer, status, noAplica }
+}
+
 function findAiFloor(text: string, floors: Floor[]) {
-  const normalized = normalizeAiText(text)
-  const canonical = normalized.includes('segundo') || normalized.includes('2do') || normalized.includes('piso 2')
+  const normalized = normalizeAiText(text).replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
+  const compact = normalized.replace(/\s+/g, '')
+  const tokens = normalized.split(' ').filter(Boolean)
+  const looksLikeShortFloorAnswer = tokens.length <= 3
+  const hasFloorContext = aiIncludesAny(normalized, ['piso', 'ambiente', 'local', 'salon']) || compact.includes('piso')
+  const canUseLooseWords = hasFloorContext || looksLikeShortFloorAnswer
+  const firstWords = ['primer', 'primero', 'priemr', 'prmer']
+  const secondWords = ['segundo', 'segundop', 'segnudo', 'segudno', 'segndo', 'segund']
+  const thirdWords = ['tercer', 'tercero', 'tecreer', 'terceer', 'tecer', 'terser', 'tercr', 'terce', 'terc']
+  const firstCompact = ['1erpiso', '1primerpiso', 'primerpiso', 'primeropis', 'primeropiso', 'pisoprimero', 'pisouno', 'piso1']
+  const secondCompact = ['2dopiso', '2segundopiso', 'segundopiso', 'segundopisop', 'pisosegundo', 'pisodos', 'piso2']
+  const thirdCompact = [
+    '3erpiso',
+    '3ropiso',
+    '3eropiso',
+    '3tercerpiso',
+    'tercerpiso',
+    'terceropiso',
+    'tecreerpiso',
+    'terceerpiso',
+    'tecerpiso',
+    'terserpiso',
+    'pisotercero',
+    'pisotres',
+    'piso3',
+    'piso4',
+    '4topiso',
+    'cuartopiso',
+    'pisocuarto',
+  ]
+  const canonical = aiIncludesAny(compact, secondCompact) || (canUseLooseWords && (normalized.includes('2do') || normalized.includes('piso 2') || aiWordLikeAny(tokens, secondWords)))
     ? '2do piso'
-    : normalized.includes('tercer') || normalized.includes('cuarto') || normalized.includes('3 y 4') || normalized.includes('3er') || normalized.includes('4to')
+    : aiIncludesAny(compact, thirdCompact) ||
+        normalized.includes('3 y 4') ||
+        normalized.includes('3er') ||
+        normalized.includes('3ro') ||
+        normalized.includes('3ero') ||
+        normalized.includes('4to') ||
+        (canUseLooseWords && (aiWordLikeAny(tokens, thirdWords) ||
+        normalized.includes('cuarto') ||
+        normalized.includes('piso 3') ||
+        normalized.includes('piso 4')))
       ? '3er y 4to piso'
-      : normalized.includes('primer') || normalized.includes('1er') || normalized.includes('piso 1')
+      : aiIncludesAny(compact, firstCompact) || (canUseLooseWords && (normalized.includes('1er') || normalized.includes('piso 1') || aiWordLikeAny(tokens, firstWords)))
         ? '1er piso'
         : ''
   if (canonical) {
@@ -5015,6 +6721,10 @@ function findAiPackage(text: string, packages: EventPackage[]) {
 }
 
 function applyAiExtraction(message: string, currentDraft: AiEventDraft, clients: Client[], floors: Floor[], packages: EventPackage[]): AiDetectedResult {
+  if (isAiSmallTalkMessage(message)) {
+    return { draft: currentDraft, detected: [], clientMatches: [] }
+  }
+
   const normalized = normalizeAiText(message)
   const nextDraft: AiEventDraft = { ...currentDraft }
   const detected: string[] = []
@@ -5029,8 +6739,7 @@ function applyAiExtraction(message: string, currentDraft: AiEventDraft, clients:
   const eventDate = parseAiDate(message)
   const timeRange = parseAiTimeRange(message)
   const amount = normalized.match(/\b(?:monto|total|precio|costo|s\/|soles)\s*:?\s*(\d+(?:[.,]\d+)?)\b/)
-  const apdaycAmount = normalized.match(/\bapdayc\s*:?\s*(\d+(?:[.,]\d+)?)\b/)
-  const apdaycNoAplica = /\b(?:sin\s+apdayc|apdayc\s+no\s+aplica|no\s+aplica\s+apdayc|no\s+aplica)\b/.test(normalized)
+  const apdaycInfo = parseAiApdaycInfo(message)
   const capacity = normalized.match(/\b(?:capacidad|aforo|para)\s*:?\s*(\d{2,4})\s*(?:personas|invitados|pax)?\b/)
 
   if (client) {
@@ -5068,8 +6777,10 @@ function applyAiExtraction(message: string, currentDraft: AiEventDraft, clients:
     if (!nextDraft.totalAmount || Number(nextDraft.totalAmount) <= 0) {
       nextDraft.totalAmount = Number(eventPackage.basePrice ?? 0)
     }
-    if (!nextDraft.contractCapacityOverride || Number(nextDraft.contractCapacityOverride) <= 0) {
-      nextDraft.contractCapacityOverride = Number(eventPackage.includedCapacity ?? 0)
+    const includedCapacity = packageCapacityValue(eventPackage)
+    if (includedCapacity > 0 && (!nextDraft.contractCapacityOverride || Number(nextDraft.contractCapacityOverride) <= 0 || nextDraft.capacityFromPackage)) {
+      nextDraft.contractCapacityOverride = includedCapacity
+      nextDraft.capacityFromPackage = true
     }
     detected.push('paquete')
   }
@@ -5086,51 +6797,100 @@ function applyAiExtraction(message: string, currentDraft: AiEventDraft, clients:
     nextDraft.totalAmount = normalizeAiMoney(amount[1])
     detected.push('monto total')
   }
-  if (apdaycAmount) {
-    nextDraft.apdaycAmount = normalizeAiMoney(apdaycAmount[1])
-    nextDraft.apdaycConfirmed = true
-    detected.push('monto APDAYC')
-  }
   if (capacity) {
     nextDraft.contractCapacityOverride = Number(capacity[1])
+    nextDraft.capacityFromPackage = false
     detected.push('capacidad contractual')
   }
-  if (apdaycNoAplica) {
+  if (apdaycInfo.noAplica) {
     nextDraft.apdaycAmount = 0
     nextDraft.apdaycPayer = 'CLIENT'
     nextDraft.apdaycStatus = 'NOT_APPLIES'
     nextDraft.apdaycConfirmed = true
     detected.push('APDAYC no aplica')
-  } else if (normalized.includes('apdayc') && normalized.includes('cliente')) {
-    nextDraft.apdaycPayer = 'CLIENT'
-    nextDraft.apdaycConfirmed = true
-    detected.push('APDAYC asumido por cliente')
-  } else if (normalized.includes('apdayc') && normalized.includes('areli')) {
-    nextDraft.apdaycPayer = 'ARELI'
-    nextDraft.apdaycConfirmed = true
-    detected.push('APDAYC asumido por Areli')
-  } else if (normalized.includes('apdayc') && normalized.includes('compart')) {
-    nextDraft.apdaycPayer = 'SHARED'
-    nextDraft.apdaycConfirmed = true
-    detected.push('APDAYC compartido')
-  }
-  if (normalized.includes('apdayc') && normalized.includes('pagado')) {
-    nextDraft.apdaycStatus = 'PAID'
-    nextDraft.apdaycConfirmed = true
-    detected.push('estado APDAYC pagado')
-  } else if (normalized.includes('apdayc') && normalized.includes('incluido')) {
-    nextDraft.apdaycStatus = 'INCLUDED'
-    nextDraft.apdaycConfirmed = true
-    detected.push('estado APDAYC incluido')
-  } else if (normalized.includes('apdayc') && normalized.includes('pendiente')) {
-    nextDraft.apdaycStatus = 'PENDING'
-    nextDraft.apdaycConfirmed = true
-    detected.push('estado APDAYC pendiente')
+  } else if (apdaycInfo.mentioned) {
+    if (apdaycInfo.amount !== undefined && Number.isFinite(apdaycInfo.amount) && apdaycInfo.amount > 0) {
+      nextDraft.apdaycAmount = apdaycInfo.amount
+      nextDraft.apdaycPayer = apdaycInfo.payer ?? nextDraft.apdaycPayer ?? 'CLIENT'
+      nextDraft.apdaycStatus = apdaycInfo.status ?? nextDraft.apdaycStatus ?? 'PENDING'
+      nextDraft.apdaycConfirmed = true
+      detected.push('monto APDAYC')
+    } else {
+      nextDraft.apdaycPayer = apdaycInfo.payer ?? nextDraft.apdaycPayer
+      nextDraft.apdaycStatus = apdaycInfo.status ?? nextDraft.apdaycStatus
+      nextDraft.apdaycConfirmed = false
+      detected.push('APDAYC mencionado')
+    }
+    if (apdaycInfo.payer) {
+      detected.push(`APDAYC asumido por ${apdaycPayerLabels[apdaycInfo.payer]}`)
+    }
+    if (apdaycInfo.status) {
+      detected.push(`estado APDAYC ${apdaycStatusLabels[apdaycInfo.status]}`)
+    }
   }
   if (nextDraft.eventType && (nextDraft.clientName || nextDraft.clientId)) {
     nextDraft.title = aiTitleFromDraft(nextDraft)
   }
   return { draft: nextDraft, detected, clientMatches: client?.id ? [] : clientMatches }
+}
+
+function mergeLocalAiDetection(base: AiDetectedResult, local: AiDetectedResult): AiDetectedResult {
+  if (local.detected.length === 0) return base
+  const detectedText = normalizeAiText(local.detected.join(' '))
+  const nextDraft: AiEventDraft = { ...base.draft }
+  const copyWhen = (condition: boolean, apply: () => void) => {
+    if (condition) apply()
+  }
+
+  copyWhen(detectedText.includes('ambiente'), () => {
+    nextDraft.floorId = local.draft.floorId
+    nextDraft.floorName = local.draft.floorName
+  })
+  copyWhen(detectedText.includes('paquete'), () => {
+    nextDraft.packageId = local.draft.packageId
+    nextDraft.packageName = local.draft.packageName
+    nextDraft.totalAmount = nextDraft.totalAmount || local.draft.totalAmount
+    nextDraft.contractCapacityOverride = nextDraft.contractCapacityOverride || local.draft.contractCapacityOverride
+    nextDraft.capacityFromPackage = local.draft.capacityFromPackage ?? nextDraft.capacityFromPackage
+  })
+  copyWhen(detectedText.includes('monto total'), () => {
+    nextDraft.totalAmount = local.draft.totalAmount
+  })
+  copyWhen(detectedText.includes('capacidad'), () => {
+    nextDraft.contractCapacityOverride = local.draft.contractCapacityOverride
+    nextDraft.capacityFromPackage = false
+  })
+  copyWhen(detectedText.includes('fecha'), () => {
+    nextDraft.eventDate = local.draft.eventDate
+  })
+  copyWhen(detectedText.includes('horario'), () => {
+    nextDraft.startTime = local.draft.startTime
+    nextDraft.endTime = local.draft.endTime
+  })
+  copyWhen(detectedText.includes('tipo de evento'), () => {
+    nextDraft.eventType = local.draft.eventType
+    nextDraft.title = local.draft.title || nextDraft.title
+  })
+  copyWhen(detectedText.includes('cliente') || detectedText.includes('telefono') || detectedText.includes('dni') || detectedText.includes('ruc'), () => {
+    nextDraft.clientId = local.draft.clientId || nextDraft.clientId
+    nextDraft.clientName = local.draft.clientName || nextDraft.clientName
+    nextDraft.clientPhone = local.draft.clientPhone || nextDraft.clientPhone
+    nextDraft.clientDocumentType = local.draft.clientDocumentType || nextDraft.clientDocumentType
+    nextDraft.clientDocumentNumber = local.draft.clientDocumentNumber || nextDraft.clientDocumentNumber
+    nextDraft.title = local.draft.title || nextDraft.title
+  })
+  copyWhen(detectedText.includes('apdayc'), () => {
+    nextDraft.apdaycAmount = local.draft.apdaycAmount
+    nextDraft.apdaycPayer = local.draft.apdaycPayer
+    nextDraft.apdaycStatus = local.draft.apdaycStatus
+    nextDraft.apdaycConfirmed = local.draft.apdaycConfirmed
+  })
+
+  return {
+    draft: nextDraft,
+    detected: Array.from(new Set([...base.detected, ...local.detected])),
+    clientMatches: base.clientMatches.length ? base.clientMatches : local.clientMatches,
+  }
 }
 
 function missingAiFields(draft: AiEventDraft, packages: EventPackage[]): AiMissingField[] {
@@ -5144,7 +6904,7 @@ function missingAiFields(draft: AiEventDraft, packages: EventPackage[]): AiMissi
   if (!draft.title) missing.push('title')
   if (!draft.eventDate) missing.push('date')
   if (!draft.startTime || !draft.endTime) missing.push('time')
-  if (!draft.contractCapacityOverride || Number(draft.contractCapacityOverride) <= 0) missing.push('capacity')
+  if (resolvedAiCapacity(draft, packages) <= 0) missing.push('capacity')
   if (!draft.totalAmount || Number(draft.totalAmount) <= 0) missing.push('amount')
   if (!isAiApdaycComplete(draft)) missing.push('apdayc')
   return missing
@@ -5179,12 +6939,13 @@ function nextAiQuestion(field?: AiMissingField) {
     time: '¿Cuál será el horario de inicio y fin?',
     capacity: '¿Cuál será la capacidad contractual?',
     amount: '¿Cuál será el monto total del evento?',
-    apdayc: 'Completemos APDAYC. Escribe algo como "APDAYC 250 cliente pendiente" o toca "No aplica".',
+    apdayc: '¿Cuál es el monto del APDAYC? Puedes escribir "APDAYC 200", "200 APDAYC", "APDYC 300" o tocar "No aplica". Si no dices responsable, lo pondré como cliente pendiente.',
   }
   return field ? questions[field] : 'Ya tengo todo. Revisa el resumen y confirma para crear el evento.'
 }
 
-function summarizeAiDraft(draft: AiEventDraft) {
+function summarizeAiDraft(draft: AiEventDraft, packages: EventPackage[] = []) {
+  const capacity = resolvedAiCapacity(draft, packages)
   return [
     `Cliente: ${draft.clientName || 'Pendiente'}`,
     `Documento: ${draft.clientDocumentNumber ? `${draft.clientDocumentType ?? 'DNI'} ${draft.clientDocumentNumber}` : 'Pendiente'}`,
@@ -5197,8 +6958,104 @@ function summarizeAiDraft(draft: AiEventDraft) {
     `Monto: ${draft.totalAmount ? money.format(Number(draft.totalAmount)) : 'Pendiente'}`,
     `APDAYC: ${formatAiApdaycDraft(draft)}`,
     `Estado APDAYC: ${draft.apdaycStatus ? apdaycStatusLabels[draft.apdaycStatus] : 'Pendiente'}`,
-    `Capacidad: ${draft.contractCapacityOverride || 'Pendiente'}`,
+    `Capacidad: ${capacity || 'Pendiente'}`,
   ].join('\n')
+}
+
+function applyGeminiInterpretation(
+  response: IaEventoResponse,
+  currentDraft: AiEventDraft,
+  clients: Client[],
+  floors: Floor[],
+  packages: EventPackage[],
+): AiDetectedResult {
+  if (!isAiDraftAction(response.accion)) {
+    return { draft: currentDraft, detected: [], clientMatches: [] }
+  }
+
+  const data = response.datos ?? {}
+  const nextDraft: AiEventDraft = { ...currentDraft }
+  const detected: string[] = []
+  const clientName = [data.clientePrincipal, data.clienteSecundario].filter(Boolean).join(' y ')
+  const clientSearchText = `${clientName} ${data.telefono ?? ''}`.trim()
+  const clientMatches = clientSearchText ? searchAiClientMatches(`cliente ${clientSearchText}`, clients) : []
+  const client = clientSearchText ? findAiClient(`cliente ${clientSearchText}`, clients) : null
+  const floor = data.local ? findAiFloor(data.local, floors) : null
+  const eventPackage = data.servicios?.length
+    ? packages.find((item) => data.servicios?.some((service) => normalizeAiText(item.name).includes(normalizeAiText(service))))
+    : undefined
+  const date = data.fecha ? (/^\d{4}-\d{2}-\d{2}$/.test(data.fecha) ? data.fecha : parseAiDate(data.fecha)) : ''
+  const timeRange = data.hora ? parseAiTimeRange(data.hora) : null
+  const services = [...(data.servicios ?? []), ...(data.personal ?? [])].filter(Boolean)
+  const notes = [services.length ? `Servicios/personal solicitados: ${services.join(', ')}` : '', data.observaciones ?? '']
+    .filter(Boolean)
+    .join('. ')
+
+  if (normalizeIaAction(response.accion) === 'CREAR_EVENTO') {
+    detected.push('accion crear evento')
+  } else if (normalizeIaAction(response.accion) === 'ACTUALIZAR_EVENTO') {
+    detected.push('actualizacion del borrador')
+  }
+  if (client) {
+    nextDraft.clientId = client.id || nextDraft.clientId
+    nextDraft.clientName = client.name
+    nextDraft.clientPhone = client.phone || nextDraft.clientPhone
+    nextDraft.clientDocumentType = client.documentType || nextDraft.clientDocumentType
+    nextDraft.clientDocumentNumber = client.documentNumber || nextDraft.clientDocumentNumber
+    detected.push(client.id ? 'cliente registrado' : 'cliente')
+  } else if (clientName) {
+    nextDraft.clientName = clientName
+    detected.push('cliente')
+  }
+  if (data.telefono) {
+    nextDraft.clientPhone = data.telefono
+    detected.push('telefono')
+  }
+  if (data.tipoEvento) {
+    nextDraft.eventType = data.tipoEvento
+    detected.push('tipo de evento')
+  }
+  if (date) {
+    nextDraft.eventDate = date
+    detected.push('fecha')
+  }
+  if (timeRange) {
+    nextDraft.startTime = timeRange.startTime
+    nextDraft.endTime = timeRange.endTime
+    detected.push('horario')
+  }
+  if (floor) {
+    nextDraft.floorId = floor.id
+    nextDraft.floorName = floor.name
+    detected.push('local')
+  }
+  if (eventPackage) {
+    nextDraft.packageId = eventPackage.id
+    nextDraft.packageName = eventPackage.name
+    if (!nextDraft.totalAmount || Number(nextDraft.totalAmount) <= 0) {
+      nextDraft.totalAmount = Number(eventPackage.basePrice ?? 0)
+    }
+    const includedCapacity = packageCapacityValue(eventPackage)
+    if (includedCapacity > 0 && (!nextDraft.contractCapacityOverride || Number(nextDraft.contractCapacityOverride) <= 0 || nextDraft.capacityFromPackage)) {
+      nextDraft.contractCapacityOverride = includedCapacity
+      nextDraft.capacityFromPackage = true
+    }
+    detected.push('paquete probable')
+  }
+  if (data.cantidadInvitados && Number(data.cantidadInvitados) > 0) {
+    nextDraft.contractCapacityOverride = Number(data.cantidadInvitados)
+    nextDraft.capacityFromPackage = false
+    detected.push('cantidad de invitados')
+  }
+  if (notes) {
+    nextDraft.notes = [nextDraft.notes, notes].filter(Boolean).join('\n')
+    detected.push('observaciones')
+  }
+  if (nextDraft.eventType && (nextDraft.clientName || nextDraft.clientId)) {
+    nextDraft.title = aiTitleFromDraft(nextDraft)
+  }
+
+  return { draft: nextDraft, detected, clientMatches: client?.id ? [] : clientMatches }
 }
 
 function AiView({
@@ -5224,6 +7081,7 @@ function AiView({
   const [thinking, setThinking] = useState(false)
   const [saving, setSaving] = useState(false)
   const [clientMatches, setClientMatches] = useState<AiClientMatch[]>([])
+  const [geminiResult, setGeminiResult] = useState<IaEventoResponse | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const missing = missingAiFields(draft, packages)
   const ready = missing.length === 0
@@ -5236,11 +7094,31 @@ function AiView({
     setMessages((current) => [...current, { id: aiMessageId(), role: 'assistant', text }])
   }
 
-  function processMessage(rawMessage: string) {
+  async function processMessage(rawMessage: string) {
     const normalized = normalizeAiText(rawMessage)
+    const contextualClientResult = applyAiClientOnlyAnswer(rawMessage, draft, clients)
+    if (contextualClientResult && (!draft.clientId || contextualClientResult.detected.includes('cliente registrado'))) {
+      setGeminiResult(null)
+      setDraft(contextualClientResult.draft)
+      setClientMatches(contextualClientResult.clientMatches)
+      const nextMissing = missingAiFields(contextualClientResult.draft, packages)
+      if (contextualClientResult.detected.includes('cliente registrado')) {
+        return `Listo, encontré y seleccioné al cliente registrado: ${contextualClientResult.draft.clientName}.\n\n${nextAiQuestion(nextMissing[0])}`
+      }
+      if (contextualClientResult.clientMatches.length > 0) {
+        return contextualClientResult.clientMatches.length === 1
+          ? `Encontré este cliente parecido: ${contextualClientResult.clientMatches[0].name}. Confírmalo con el botón o usa "cliente nuevo" para registrar otro.\n\n${nextAiQuestion(nextMissing[0])}`
+          : `Encontré varios clientes parecidos. Elige el correcto con los botones o escribe "cliente nuevo" para registrar "${contextualClientResult.draft.clientName || rawMessage}".`
+      }
+      if (parseAiDocument(rawMessage)) {
+        return `No encontré un cliente registrado con ese ${contextualClientResult.draft.clientDocumentType}. Lo prepararé como cliente nuevo. Dime el nombre y teléfono para registrarlo antes de crear el evento.`
+      }
+      return `No encontré ningún cliente registrado llamado "${contextualClientResult.draft.clientName}". ¿Deseas crearlo como cliente nuevo? Si sí, escribe su teléfono y DNI/RUC.`
+    }
     if (normalized.includes('limpiar')) {
       setDraft(newAiDraft())
       setClientMatches([])
+      setGeminiResult(null)
       return 'Listo, limpié el borrador. Empecemos de nuevo: ¿qué evento quieres separar?'
     }
     if (normalized.includes('cliente nuevo')) {
@@ -5252,7 +7130,7 @@ function AiView({
     }
     if (normalized.includes('ver resumen') || normalized.includes('resumen')) {
       const currentMissing = missingAiFields(draft, packages)
-      return `Este es el borrador actual:\n\n${summarizeAiDraft(draft)}\n\n${currentMissing.length ? `Falta: ${currentMissing.map(aiMissingLabel).join(', ')}.` : 'Ya está listo para confirmar.'}`
+      return `Este es el borrador actual:\n\n${summarizeAiDraft(draft, packages)}\n\n${currentMissing.length ? `Falta: ${currentMissing.map(aiMissingLabel).join(', ')}.` : 'Ya está listo para confirmar.'}`
     }
     if (normalized.includes('que falta') || normalized.includes('qué falta')) {
       const currentMissing = missingAiFields(draft, packages)
@@ -5264,10 +7142,41 @@ function AiView({
       const currentMissing = missingAiFields(draft, packages)
       return currentMissing.length
         ? `Todavía no puedo crear el evento. Falta: ${currentMissing.map(aiMissingLabel).join(', ')}.\n\n${nextAiQuestion(currentMissing[0])}`
-        : `Este es el evento que voy a crear:\n\n${summarizeAiDraft(draft)}\n\nPresiona "Confirmar y crear evento" para guardarlo.`
+        : `Este es el evento que voy a preparar:\n\n${summarizeAiDraft(draft, packages)}\n\nPresiona "Confirmar y registrar" para guardarlo.`
     }
 
-    const result = applyAiExtraction(rawMessage, draft, clients, floors, packages)
+    let result: AiDetectedResult
+    let geminiLine = ''
+    try {
+      const interpreted = await api.iaInterpretar(rawMessage)
+      if (!isAiDraftAction(interpreted.accion)) {
+        const localResult = applyAiExtraction(rawMessage, draft, clients, floors, packages)
+        if (localResult.detected.length > 0) {
+          setGeminiResult(null)
+          result = localResult
+        } else {
+          setGeminiResult(null)
+          setClientMatches([])
+          return interpreted.mensajeUsuario?.trim() || 'Hola. Puedo ayudarte a armar una reserva: dime cliente, fecha, horario, ambiente, paquete o monto.'
+        }
+      } else {
+        setGeminiResult(interpreted)
+        result = applyGeminiInterpretation(interpreted, draft, clients, floors, packages)
+        geminiLine = interpreted.mensajeUsuario ? `${interpreted.mensajeUsuario}\n\n` : ''
+      }
+    } catch (err) {
+      setGeminiResult(null)
+      if (isAiSmallTalkMessage(rawMessage)) {
+        setClientMatches([])
+        return 'Hola. Puedo ayudarte a crear una reserva: escribe el evento como te salga y yo ordeno cliente, fecha, horario, ambiente, paquete, monto y APDAYC.'
+      }
+      result = applyAiExtraction(rawMessage, draft, clients, floors, packages)
+      geminiLine = `No pude contactar Gemini, use interpretacion local. ${err instanceof Error ? err.message : ''}\n\n`
+    }
+    if (!isAiSmallTalkMessage(rawMessage)) {
+      const localResult = applyAiExtraction(rawMessage, draft, clients, floors, packages)
+      result = result.detected.length === 0 ? localResult : mergeLocalAiDetection(result, localResult)
+    }
     setDraft(result.draft)
     setClientMatches(result.clientMatches)
     const nextMissing = missingAiFields(result.draft, packages)
@@ -5279,8 +7188,8 @@ function AiView({
           ? '\n\nEncontré varios clientes registrados parecidos. Elige el correcto con los botones o registra uno nuevo.'
           : ''
     return nextMissing.length
-      ? `${detectedLine}${matchesLine}\n\n${nextAiQuestion(nextMissing[0])}`
-      : `${detectedLine}${matchesLine}\n\nEste es el evento que voy a crear:\n\n${summarizeAiDraft(result.draft)}\n\nSi todo está correcto, presiona "Confirmar y crear evento".`
+      ? `${geminiLine}${detectedLine}${matchesLine}\n\n${nextAiQuestion(nextMissing[0])}`
+      : `${geminiLine}${detectedLine}${matchesLine}\n\nEste es el evento que voy a crear:\n\n${summarizeAiDraft(result.draft, packages)}\n\nSi todo está correcto, presiona "Confirmar y registrar".`
   }
 
   function sendMessage(message = input) {
@@ -5290,9 +7199,11 @@ function AiView({
     setMessages((current) => [...current, { id: aiMessageId(), role: 'user', text: cleanMessage }])
     setThinking(true)
     window.setTimeout(() => {
-      const answer = processMessage(cleanMessage)
-      pushAssistant(answer)
-      setThinking(false)
+      void (async () => {
+        const answer = await processMessage(cleanMessage)
+        pushAssistant(answer)
+        setThinking(false)
+      })()
     }, 360)
   }
 
@@ -5339,11 +7250,13 @@ function AiView({
       packageName: eventPackage.name,
       totalAmount: current.totalAmount && Number(current.totalAmount) > 0 ? current.totalAmount : Number(eventPackage.basePrice ?? 0),
       contractCapacityOverride:
-        current.contractCapacityOverride && Number(current.contractCapacityOverride) > 0
+        current.contractCapacityOverride && Number(current.contractCapacityOverride) > 0 && !current.capacityFromPackage && current.packageId === eventPackage.id
           ? current.contractCapacityOverride
           : Number(eventPackage.includedCapacity ?? 0),
+      capacityFromPackage: packageCapacityValue(eventPackage) > 0,
     }))
-    pushAssistant(`Paquete seleccionado: ${eventPackage.name}.`)
+    const capacity = packageCapacityValue(eventPackage)
+    pushAssistant(`Paquete seleccionado: ${eventPackage.name}.${capacity ? ` Capacidad tomada del paquete: ${capacity} personas.` : ''}`)
   }
 
   function chooseNewClientDocumentType(documentType: DocumentType) {
@@ -5367,7 +7280,8 @@ function AiView({
     setDraft((current) => ({
       ...current,
       apdaycPayer: payer,
-      apdaycConfirmed: true,
+      apdaycStatus: current.apdaycStatus ?? (Number(current.apdaycAmount) > 0 ? 'PENDING' : current.apdaycStatus),
+      apdaycConfirmed: Number(current.apdaycAmount) > 0 && Boolean(current.apdaycStatus ?? 'PENDING'),
     }))
     pushAssistant(`APDAYC lo asume: ${apdaycPayerLabels[payer]}. Falta el monto y estado si todavía no los diste.`)
   }
@@ -5377,12 +7291,13 @@ function AiView({
       ...current,
       apdaycStatus: status,
       apdaycAmount: status === 'NOT_APPLIES' ? 0 : current.apdaycAmount,
-      apdaycPayer: status === 'NOT_APPLIES' ? 'CLIENT' : current.apdaycPayer,
-      apdaycConfirmed: true,
+      apdaycPayer: status === 'NOT_APPLIES' ? 'CLIENT' : current.apdaycPayer ?? (Number(current.apdaycAmount) > 0 ? 'CLIENT' : undefined),
+      apdaycConfirmed: status === 'NOT_APPLIES' ? true : Number(current.apdaycAmount) > 0 && Boolean(current.apdaycPayer ?? 'CLIENT'),
     }))
     pushAssistant(status === 'NOT_APPLIES' ? 'Listo, APDAYC marcado como no aplica.' : `Estado APDAYC: ${apdaycStatusLabels[status]}.`)
   }
 
+  const displayedCapacity = resolvedAiCapacity(draft, packages)
   const draftRows = [
     ['Cliente', draft.clientName || (draft.clientId ? 'Cliente seleccionado' : '')],
     ['Documento', draft.clientDocumentNumber ? `${draft.clientDocumentType ?? 'DNI'} ${draft.clientDocumentNumber}` : ''],
@@ -5397,21 +7312,23 @@ function AiView({
     ['Monto total', draft.totalAmount ? money.format(Number(draft.totalAmount)) : ''],
     ['APDAYC', formatAiApdaycDraft(draft)],
     ['Estado APDAYC', draft.apdaycStatus ? apdaycStatusLabels[draft.apdaycStatus] : ''],
-    ['Capacidad', draft.contractCapacityOverride],
+    ['Capacidad', displayedCapacity ? `${displayedCapacity} personas` : ''],
     ['Notas', draft.notes],
   ] as const
   const shouldAskNewClientDocument = Boolean(!draft.clientId && draft.clientName?.trim() && draft.clientPhone?.trim() && !validAiClientDocument(draft))
   const showFloorButtons = !draft.floorId && floors.length > 0
   const showPackageButtons = !draft.packageId && packages.length > 0
   const showApdaycButtons = !isAiApdaycComplete(draft)
+  const hasApdaycAmount = Number(draft.apdaycAmount) > 0
 
   return (
     <section className="ai-chat-layout">
       <div className="panel ai-chat-panel">
         <header className="ai-chat-head">
           <div>
-            <p className="eyebrow">Asistente conversacional</p>
-            <h2>Crear evento con IA</h2>
+            <p className="eyebrow">Asistente Gemini</p>
+            <h2>Asistente IA</h2>
+            <p>Escribe lo que deseas hacer y la IA lo ordenará por ti.</p>
           </div>
           <span className={`ai-ready-pill ${ready ? 'ready' : ''}`}>{ready ? 'Listo para confirmar' : `${missing.length} datos faltantes`}</span>
         </header>
@@ -5502,28 +7419,35 @@ function AiView({
             {showApdaycButtons && (
               <div className="ai-action-group">
                 <span>APDAYC obligatorio</span>
+                {!hasApdaycAmount && (
+                  <p className="ai-action-hint">Primero dime el monto en el chat: APDAYC 200, 200 APDAYC, APDYC 300 o el monto real.</p>
+                )}
                 <div>
                   <button className="btn ghost" onClick={chooseApdaycNoAplica} type="button">
                     No aplica
                   </button>
-                  <button className="btn ghost" onClick={() => chooseApdaycPayer('CLIENT')} type="button">
-                    Lo paga cliente
-                  </button>
-                  <button className="btn ghost" onClick={() => chooseApdaycPayer('ARELI')} type="button">
-                    Lo paga Areli
-                  </button>
-                  <button className="btn ghost" onClick={() => chooseApdaycPayer('SHARED')} type="button">
-                    Compartido
-                  </button>
-                  <button className="btn ghost" onClick={() => chooseApdaycStatus('PENDING')} type="button">
-                    Pendiente
-                  </button>
-                  <button className="btn ghost" onClick={() => chooseApdaycStatus('INCLUDED')} type="button">
-                    Incluido
-                  </button>
-                  <button className="btn ghost" onClick={() => chooseApdaycStatus('PAID')} type="button">
-                    Pagado
-                  </button>
+                  {hasApdaycAmount && (
+                    <>
+                      <button className="btn ghost" onClick={() => chooseApdaycPayer('CLIENT')} type="button">
+                        Lo paga cliente
+                      </button>
+                      <button className="btn ghost" onClick={() => chooseApdaycPayer('ARELI')} type="button">
+                        Lo paga Areli
+                      </button>
+                      <button className="btn ghost" onClick={() => chooseApdaycPayer('SHARED')} type="button">
+                        Compartido
+                      </button>
+                      <button className="btn ghost" onClick={() => chooseApdaycStatus('PENDING')} type="button">
+                        Pendiente
+                      </button>
+                      <button className="btn ghost" onClick={() => chooseApdaycStatus('INCLUDED')} type="button">
+                        Incluido
+                      </button>
+                      <button className="btn ghost" onClick={() => chooseApdaycStatus('PAID')} type="button">
+                        Pagado
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -5540,13 +7464,13 @@ function AiView({
 
         <form className="ai-chat-composer" onSubmit={(event) => { event.preventDefault(); sendMessage() }}>
           <input
-            placeholder="Ej: Separa un matrimonio para Juan Perez el 20 de julio de 7pm a 2am en segundo piso..."
+            placeholder="Ej: crea evnto sabado boda carlos y dayana 120 invitados con dj y mozos..."
             value={input}
             onChange={(event) => setInput(event.target.value)}
           />
           <button className="btn primary" disabled={thinking || saving || !input.trim()} type="submit">
             <Sparkles size={16} />
-            Enviar
+            Interpretar con IA
           </button>
         </form>
       </div>
@@ -5559,7 +7483,7 @@ function AiView({
           </div>
           <button className="btn primary" disabled={!ready || saving} onClick={() => void confirmCreate()} type="button">
             <Save size={16} />
-            {saving ? 'Creando...' : 'Confirmar y crear evento'}
+            {saving ? 'Creando...' : 'Confirmar y registrar'}
           </button>
         </div>
 
@@ -5567,6 +7491,21 @@ function AiView({
           <strong>{ready ? 'Borrador completo' : 'Falta completar'}</strong>
           <p>{ready ? 'Revisa los datos y confirma para guardar.' : missing.map(aiMissingLabel).join(', ')}</p>
         </div>
+
+        {geminiResult && (
+          <div className="ai-gemini-result">
+            <span>Interpretación Gemini</span>
+            <strong>{geminiResult.accion}</strong>
+            <p>{geminiResult.mensajeUsuario}</p>
+            {geminiResult.faltantes.length > 0 && (
+              <ul>
+                {geminiResult.faltantes.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         <div className="ai-draft-list">
           {draftRows.map(([label, value]) => (
@@ -5582,3 +7521,4 @@ function AiView({
 }
 
 export default App
+

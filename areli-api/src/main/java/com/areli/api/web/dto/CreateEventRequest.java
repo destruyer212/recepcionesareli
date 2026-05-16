@@ -30,7 +30,7 @@ public record CreateEventRequest(
 ) {
     public CreateEventRequest {
         if (status == null) {
-            status = EventStatus.SEPARATED;
+            status = EventStatus.INQUIRY;
         }
         if (apdaycAmount == null) {
             apdaycAmount = BigDecimal.ZERO;

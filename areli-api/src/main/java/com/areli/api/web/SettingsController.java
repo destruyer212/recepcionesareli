@@ -30,6 +30,12 @@ public class SettingsController {
         } else if (request.peruApiToken() != null && !request.peruApiToken().isBlank()) {
             appSettingsService.setPeruApiToken(request.peruApiToken());
         }
+        if (Boolean.TRUE.equals(request.clearGeminiApiKey())) {
+            appSettingsService.clearGeminiApiKey();
+        } else if (request.geminiApiKey() != null && !request.geminiApiKey().isBlank()) {
+            appSettingsService.setGeminiApiKey(request.geminiApiKey());
+        }
+        appSettingsService.setGeminiModel(request.geminiModel());
         appSettingsService.setRescheduleMinNoticeDays(request.rescheduleMinNoticeDays());
         appSettingsService.setRescheduleMaxMonths(request.rescheduleMaxMonths());
         appSettingsService.setCancellationRetentionNoticeDays(request.cancellationRetentionNoticeDays());

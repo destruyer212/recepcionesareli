@@ -72,38 +72,28 @@ public class InventoryService {
 
     @Transactional
     public InventoryItem create(InventoryItemRequest request) {
-        InventoryCategory category = categories.findById(request.categoriaId())
-                .filter(InventoryCategory::isActivo)
-                .orElseThrow(() -> new EntityNotFoundException("Categoria de inventario no encontrada"));
-        InventorySubcategory subcategory = subcategories.findById(request.subcategoriaId())
-                .filter(InventorySubcategory::isActivo)
-                .orElseThrow(() -> new EntityNotFoundException("Subcategoria de inventario no encontrada"));
-        if (!subcategory.getCategoria().getId().equals(category.getId())) {
-            throw new IllegalArgumentException("La subcategoria no pertenece a la categoria seleccionada");
-        }
-
+        InventorySelection selection = resolveSelection(request);
         String piso = normalizePiso(request.piso());
         String nombre = cleanRequired(request.nombre(), "El nombre del item es obligatorio");
         InventoryItem item = inventoryItems
                 .findByPisoIgnoreCaseAndCategoria_IdAndSubcategoria_IdAndNombreIgnoreCase(
                         piso,
-                        category.getId(),
-                        subcategory.getId(),
+                        selection.category().getId(),
+                        selection.subcategory().getId(),
                         nombre)
                 .orElseGet(InventoryItem::new);
+        applyRequest(item, request, selection, piso, nombre);
+        return inventoryItems.save(item);
+    }
 
-        item.setPiso(piso);
-        item.setCategoria(category);
-        item.setSubcategoria(subcategory);
-        item.setNombre(nombre);
-        item.setDescripcion(cleanOptional(request.descripcion()));
-        item.setCantidad(request.cantidad());
-        item.setUnidadMedida(cleanRequired(request.unidadMedida(), "La unidad de medida es obligatoria"));
-        item.setValorTotal(request.valorTotal() == null ? BigDecimal.ZERO : request.valorTotal());
-        item.setEstado(normalizeEstado(request.estado()));
-        item.setUbicacion(cleanOptional(request.ubicacion()));
-        item.setObservacion(cleanOptional(request.observacion()));
-        item.setActivo(true);
+    @Transactional
+    public InventoryItem update(UUID id, InventoryItemRequest request) {
+        InventoryItem item = inventoryItems.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("Articulo de inventario no encontrado"));
+        InventorySelection selection = resolveSelection(request);
+        String piso = normalizePiso(request.piso());
+        String nombre = cleanRequired(request.nombre(), "El nombre del item es obligatorio");
+        applyRequest(item, request, selection, piso, nombre);
         return inventoryItems.save(item);
     }
 
@@ -113,6 +103,39 @@ public class InventoryService {
                 .orElseThrow(() -> new EntityNotFoundException("Articulo de inventario no encontrado"));
         item.setActivo(false);
         inventoryItems.save(item);
+    }
+
+    private InventorySelection resolveSelection(InventoryItemRequest request) {
+        InventoryCategory category = categories.findById(request.categoriaId())
+                .filter(InventoryCategory::isActivo)
+                .orElseThrow(() -> new EntityNotFoundException("Categoria de inventario no encontrada"));
+        InventorySubcategory subcategory = subcategories.findById(request.subcategoriaId())
+                .filter(InventorySubcategory::isActivo)
+                .orElseThrow(() -> new EntityNotFoundException("Subcategoria de inventario no encontrada"));
+        if (!subcategory.getCategoria().getId().equals(category.getId())) {
+            throw new IllegalArgumentException("La subcategoria no pertenece a la categoria seleccionada");
+        }
+        return new InventorySelection(category, subcategory);
+    }
+
+    private void applyRequest(
+            InventoryItem item,
+            InventoryItemRequest request,
+            InventorySelection selection,
+            String piso,
+            String nombre) {
+        item.setPiso(piso);
+        item.setCategoria(selection.category());
+        item.setSubcategoria(selection.subcategory());
+        item.setNombre(nombre);
+        item.setDescripcion(cleanOptional(request.descripcion()));
+        item.setCantidad(request.cantidad());
+        item.setUnidadMedida(cleanRequired(request.unidadMedida(), "La unidad de medida es obligatoria"));
+        item.setValorTotal(request.valorTotal() == null ? BigDecimal.ZERO : request.valorTotal());
+        item.setEstado(normalizeEstado(request.estado()));
+        item.setUbicacion(cleanOptional(request.ubicacion()));
+        item.setObservacion(cleanOptional(request.observacion()));
+        item.setActivo(true);
     }
 
     private InventorySummary summarize(List<InventoryItemResponse> items) {
@@ -221,5 +244,8 @@ public class InventoryService {
         private InventoryCategorySummary toResponse() {
             return new InventoryCategorySummary(piso, categoria, itemCount, totalQuantity, totalValue);
         }
+    }
+
+    private record InventorySelection(InventoryCategory category, InventorySubcategory subcategory) {
     }
 }

@@ -1,6 +1,7 @@
 package com.areli.api.domain;
 
 import com.areli.api.common.BaseEntity;
+import com.areli.api.domain.Enums.CancellationPaymentStatus;
 import com.areli.api.domain.Enums.CancellationType;
 import com.areli.api.domain.Enums.EventStatus;
 import jakarta.persistence.Column;
@@ -48,7 +49,7 @@ public class Event extends BaseEntity {
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
-    private EventStatus status = EventStatus.SEPARATED;
+    private EventStatus status = EventStatus.INQUIRY;
 
     @Column(nullable = false)
     private BigDecimal totalAmount = BigDecimal.ZERO;
@@ -86,6 +87,40 @@ public class Event extends BaseEntity {
 
     @Column(name = "cancellation_notes", columnDefinition = "text")
     private String cancellationNotes;
+
+    @Column(name = "cancellation_advance_amount", nullable = false)
+    private BigDecimal cancellationAdvanceAmount = BigDecimal.ZERO;
+
+    @Column(name = "cancellation_retained_amount", nullable = false)
+    private BigDecimal cancellationRetainedAmount = BigDecimal.ZERO;
+
+    @Column(name = "cancellation_refunded_amount", nullable = false)
+    private BigDecimal cancellationRefundedAmount = BigDecimal.ZERO;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "cancellation_payment_status", length = 50)
+    private CancellationPaymentStatus cancellationPaymentStatus;
+
+    @Column(name = "cancellation_reason", columnDefinition = "text")
+    private String cancellationReason;
+
+    @Column(name = "cancellation_date")
+    private LocalDate cancellationDate;
+
+    @Column(name = "cancellation_observation", columnDefinition = "text")
+    private String cancellationObservation;
+
+    @Column(name = "rescheduled", nullable = false)
+    private boolean rescheduled = false;
+
+    @Column(name = "original_event_date")
+    private LocalDate originalEventDate;
+
+    @Column(name = "original_start_time")
+    private LocalTime originalStartTime;
+
+    @Column(name = "original_end_time")
+    private LocalTime originalEndTime;
 
     public Client getClient() {
         return client;
@@ -253,5 +288,93 @@ public class Event extends BaseEntity {
 
     public void setCancellationNotes(String cancellationNotes) {
         this.cancellationNotes = cancellationNotes;
+    }
+
+    public BigDecimal getCancellationAdvanceAmount() {
+        return cancellationAdvanceAmount;
+    }
+
+    public void setCancellationAdvanceAmount(BigDecimal cancellationAdvanceAmount) {
+        this.cancellationAdvanceAmount = cancellationAdvanceAmount;
+    }
+
+    public BigDecimal getCancellationRetainedAmount() {
+        return cancellationRetainedAmount;
+    }
+
+    public void setCancellationRetainedAmount(BigDecimal cancellationRetainedAmount) {
+        this.cancellationRetainedAmount = cancellationRetainedAmount;
+    }
+
+    public BigDecimal getCancellationRefundedAmount() {
+        return cancellationRefundedAmount;
+    }
+
+    public void setCancellationRefundedAmount(BigDecimal cancellationRefundedAmount) {
+        this.cancellationRefundedAmount = cancellationRefundedAmount;
+    }
+
+    public CancellationPaymentStatus getCancellationPaymentStatus() {
+        return cancellationPaymentStatus;
+    }
+
+    public void setCancellationPaymentStatus(CancellationPaymentStatus cancellationPaymentStatus) {
+        this.cancellationPaymentStatus = cancellationPaymentStatus;
+    }
+
+    public String getCancellationReason() {
+        return cancellationReason;
+    }
+
+    public void setCancellationReason(String cancellationReason) {
+        this.cancellationReason = cancellationReason;
+    }
+
+    public LocalDate getCancellationDate() {
+        return cancellationDate;
+    }
+
+    public void setCancellationDate(LocalDate cancellationDate) {
+        this.cancellationDate = cancellationDate;
+    }
+
+    public String getCancellationObservation() {
+        return cancellationObservation;
+    }
+
+    public void setCancellationObservation(String cancellationObservation) {
+        this.cancellationObservation = cancellationObservation;
+    }
+
+    public boolean isRescheduled() {
+        return rescheduled;
+    }
+
+    public void setRescheduled(boolean rescheduled) {
+        this.rescheduled = rescheduled;
+    }
+
+    public LocalDate getOriginalEventDate() {
+        return originalEventDate;
+    }
+
+    public void setOriginalEventDate(LocalDate originalEventDate) {
+        this.originalEventDate = originalEventDate;
+    }
+
+    public LocalTime getOriginalStartTime() {
+        return originalStartTime;
+    }
+
+    public void setOriginalStartTime(LocalTime originalStartTime) {
+        this.originalStartTime = originalStartTime;
+    }
+
+    public LocalTime getOriginalEndTime() {
+        return originalEndTime;
+    }
+
+    public void setOriginalEndTime(LocalTime originalEndTime) {
+        this.originalEndTime = originalEndTime;
     }
 }

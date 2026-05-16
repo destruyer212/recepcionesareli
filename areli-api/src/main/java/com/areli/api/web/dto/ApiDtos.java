@@ -5,10 +5,15 @@ import com.areli.api.domain.Event;
 import com.areli.api.domain.EventPackage;
 import com.areli.api.domain.Floor;
 import com.areli.api.domain.Enums.CancellationType;
+import com.areli.api.domain.Enums.CancellationPaymentStatus;
 import com.areli.api.domain.Enums.DocumentType;
 import com.areli.api.domain.Enums.EventStatus;
 import com.areli.api.domain.Enums.FloorStatus;
+import com.areli.api.domain.Enums.PaymentType;
+import com.areli.api.domain.PaymentAndOperations.ClientPayment;
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -27,6 +32,10 @@ public final class ApiDtos {
             String whatsapp,
             String email,
             String address,
+            String province,
+            String district,
+            String provinceUbigeo,
+            String districtUbigeo,
             String notes
     ) {
         public ClientRequest {
@@ -55,12 +64,16 @@ public final class ApiDtos {
             client.setWhatsapp(whatsapp);
             client.setEmail(email);
             client.setAddress(address);
+            client.setProvince(province);
+            client.setDistrict(district);
+            client.setProvinceUbigeo(provinceUbigeo);
+            client.setDistrictUbigeo(districtUbigeo);
             client.setNotes(notes);
             return client;
         }
     }
 
-    public record ClientResponse(UUID id, String fullName, DocumentType documentType, String documentNumber, String phone, String whatsapp, String email) {
+    public record ClientResponse(UUID id, String fullName, DocumentType documentType, String documentNumber, String phone, String whatsapp, String email, String address, String province, String district, String provinceUbigeo, String districtUbigeo, String notes) {
         public static ClientResponse from(Client client) {
             return new ClientResponse(
                     client.getId(),
@@ -69,8 +82,26 @@ public final class ApiDtos {
                     client.getDocumentNumber(),
                     client.getPhone(),
                     client.getWhatsapp(),
-                    client.getEmail());
+                    client.getEmail(),
+                    client.getAddress(),
+                    client.getProvince(),
+                    client.getDistrict(),
+                    client.getProvinceUbigeo(),
+                    client.getDistrictUbigeo(),
+                    client.getNotes());
         }
+    }
+
+    public record PeruProvinceResponse(String ubigeo, String name, String departmentUbigeo, String departmentName) {
+    }
+
+    public record PeruDistrictResponse(String ubigeo, String name, String provinceUbigeo, String provinceName, String departmentUbigeo, String departmentName) {
+    }
+
+    public record PeruLocationsResponse(
+            java.util.List<PeruProvinceResponse> provinces,
+            java.util.List<PeruDistrictResponse> districts
+    ) {
     }
 
     public record ClientLookupResponse(
@@ -90,14 +121,37 @@ public final class ApiDtos {
         }
     }
 
-    public record PackageResponse(UUID id, String name, String eventType, BigDecimal basePrice, Integer includedCapacity, BigDecimal guaranteeAmount, String includedServices, String terms) {
+    public record PackageRequest(
+            @NotBlank String name,
+            String eventType,
+            @NotNull @DecimalMin("0.00") BigDecimal basePrice,
+            Integer includedCapacity,
+            BigDecimal guaranteeAmount,
+            String includedServices,
+            String terms,
+            Boolean active
+    ) {
+    }
+
+    public record PackageResponse(UUID id, String name, String eventType, BigDecimal basePrice, Integer includedCapacity, BigDecimal guaranteeAmount, String includedServices, String terms, boolean active) {
         public static PackageResponse from(EventPackage eventPackage) {
-            return new PackageResponse(eventPackage.getId(), eventPackage.getName(), eventPackage.getEventType(), eventPackage.getBasePrice(), eventPackage.getIncludedCapacity(), eventPackage.getGuaranteeAmount(), eventPackage.getIncludedServices(), eventPackage.getTerms());
+            return new PackageResponse(
+                    eventPackage.getId(),
+                    eventPackage.getName(),
+                    eventPackage.getEventType(),
+                    eventPackage.getBasePrice(),
+                    eventPackage.getIncludedCapacity(),
+                    eventPackage.getGuaranteeAmount(),
+                    eventPackage.getIncludedServices(),
+                    eventPackage.getTerms(),
+                    eventPackage.isActive());
         }
     }
 
     public record EventResponse(
             UUID id,
+            UUID clientId,
+            UUID packageId,
             String clientName,
             String floorName,
             String packageName,
@@ -119,14 +173,35 @@ public final class ApiDtos {
             Integer cancellationNoticeDays,
             BigDecimal retainedAdvanceAmount,
             String cancellationNotes,
+            BigDecimal paidAmount,
+            BigDecimal balanceAmount,
+            BigDecimal cancellationAdvanceAmount,
+            BigDecimal cancellationRetainedAmount,
+            BigDecimal cancellationRefundedAmount,
+            CancellationPaymentStatus cancellationPaymentStatus,
+            String cancellationReason,
+            LocalDate cancellationDate,
+            String cancellationObservation,
+            boolean rescheduled,
+            LocalDate originalEventDate,
+            LocalTime originalStartTime,
+            LocalTime originalEndTime,
             OffsetDateTime createdAt
     ) {
         public static EventResponse from(Event event) {
+            return from(event, BigDecimal.ZERO);
+        }
+
+        public static EventResponse from(Event event, BigDecimal paidAmount) {
             String packageName = event.getEventPackage() == null ? null : event.getEventPackage().getName();
             String packageIncludedServices = event.getEventPackage() == null ? null : event.getEventPackage().getIncludedServices();
             String packageTerms = event.getEventPackage() == null ? null : event.getEventPackage().getTerms();
+            BigDecimal safePaid = paidAmount == null ? BigDecimal.ZERO : paidAmount;
+            BigDecimal balance = event.getTotalAmount().subtract(safePaid).max(BigDecimal.ZERO);
             return new EventResponse(
                     event.getId(),
+                    event.getClient().getId(),
+                    event.getEventPackage() == null ? null : event.getEventPackage().getId(),
                     event.getClient().getFullName(),
                     event.getFloor().getName(),
                     packageName,
@@ -148,7 +223,60 @@ public final class ApiDtos {
                     event.getCancellationNoticeDays(),
                     event.getRetainedAdvanceAmount(),
                     event.getCancellationNotes(),
+                    safePaid,
+                    balance,
+                    event.getCancellationAdvanceAmount(),
+                    event.getCancellationRetainedAmount(),
+                    event.getCancellationRefundedAmount(),
+                    event.getCancellationPaymentStatus(),
+                    event.getCancellationReason(),
+                    event.getCancellationDate(),
+                    event.getCancellationObservation(),
+                    event.isRescheduled(),
+                    event.getOriginalEventDate(),
+                    event.getOriginalStartTime(),
+                    event.getOriginalEndTime(),
                     event.getCreatedAt());
+        }
+    }
+
+    public record ClientPaymentRequest(
+            @NotNull LocalDate paymentDate,
+            @NotBlank String concept,
+            @NotNull @DecimalMin("0.01") BigDecimal amount,
+            @NotBlank String method,
+            PaymentType paymentType,
+            String internalReceiptNumber,
+            String notes
+    ) {
+    }
+
+    public record ClientPaymentResponse(
+            UUID id,
+            UUID eventId,
+            LocalDate paymentDate,
+            String concept,
+            BigDecimal amount,
+            String method,
+            PaymentType paymentType,
+            boolean countsTowardsEventTotal,
+            String internalReceiptNumber,
+            String notes,
+            OffsetDateTime createdAt
+    ) {
+        public static ClientPaymentResponse from(ClientPayment payment) {
+            return new ClientPaymentResponse(
+                    payment.getId(),
+                    payment.getEvent().getId(),
+                    payment.getPaymentDate(),
+                    payment.getConcept(),
+                    payment.getAmount(),
+                    payment.getMethod(),
+                    payment.getPaymentType(),
+                    payment.isCountsTowardsEventTotal(),
+                    payment.getInternalReceiptNumber(),
+                    payment.getNotes(),
+                    payment.getCreatedAt());
         }
     }
 
@@ -275,6 +403,10 @@ public final class ApiDtos {
             boolean peruApiTokenReady,
             String peruApiTokenSource,
             String peruApiTokenHint,
+            boolean geminiApiKeyReady,
+            String geminiApiKeySource,
+            String geminiApiKeyHint,
+            String geminiModel,
             Integer rescheduleMinNoticeDays,
             Integer rescheduleMaxMonths,
             Integer cancellationRetentionNoticeDays) {
@@ -283,12 +415,18 @@ public final class ApiDtos {
     public record UpdateAppSettingsRequest(
             String peruApiToken,
             Boolean clearPeruApiToken,
+            String geminiApiKey,
+            Boolean clearGeminiApiKey,
+            String geminiModel,
             Integer rescheduleMinNoticeDays,
             Integer rescheduleMaxMonths,
             Integer cancellationRetentionNoticeDays) {
         public UpdateAppSettingsRequest {
             if (clearPeruApiToken == null) {
                 clearPeruApiToken = false;
+            }
+            if (clearGeminiApiKey == null) {
+                clearGeminiApiKey = false;
             }
         }
     }
